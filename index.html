@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#D4D3CC">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="./apple-touch-icon.png">
+  <title>MochaMocha</title>
+</head>
+<body>
+  <div id="stage" aria-label="3D Mochi Shiba"></div>
+
+  <header id="topbar">
+    <div class="top-row">
+      <div class="brand-cluster">
+        <div class="glass-chip star-badge" id="starBadge" aria-live="polite">
+          <svg class="ui-ico star-svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2.8l2.7 5.7 6.2.8-4.5 4.3 1.1 6.2L12 16.8 6.5 19.8l1.1-6.2-4.5-4.3 6.2-.8z"/></svg>
+          <span id="starCount">0</span>
+        </div>
+        <div class="glass-chip mood-chip" aria-live="polite">
+          <span class="mood-dot" id="moodDot" aria-hidden="true"></span>
+          <span id="moodLabel">Zufrieden</span>
+          <i class="mini-bar"><b id="moodBar"></b></i>
+        </div>
+        <div class="glass-chip full-chip" aria-live="polite">
+          <span id="fullLabel">Hungrig</span>
+          <i class="mini-bar"><b id="fullBar"></b></i>
+        </div>
+      </div>
+
+      <nav class="hud-actions" aria-label="App Navigation">
+        <button type="button" class="pill pill-focus" id="btnFocus">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="7.5"/><path d="M12 9.5V13l2.2 1.6M9.5 3h5"/></svg>
+          <span id="btnFocusText">Fokus</span>
+        </button>
+        <button type="button" class="pill icon-pill" id="btnCoats" aria-label="Style">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2z"/></svg>
+          <span id="btnCoatsText" class="sr-mobile">Style</span>
+          <span class="unlock-dot" id="unlockDot" hidden aria-hidden="true"></span>
+        </button>
+        <button type="button" class="pill icon-pill" id="btnSettings" aria-label="Einstellungen">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+
+  <!-- Play Dock (Clean illustrated SVG game controls) -->
+  <div id="dock" role="toolbar" aria-label="Shiba Pflege">
+    <button type="button" class="dock-btn action" id="btnBowl">
+      <svg class="dock-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M4 12.5h16l-1.5 5.2A2.5 2.5 0 0 1 16.1 19.5H7.9a2.5 2.5 0 0 1-2.4-1.8L4 12.5z" fill="#E59B82"/>
+        <ellipse cx="12" cy="12" rx="7.6" ry="2.2" fill="#9A6949"/>
+        <circle cx="9.5" cy="11.2" r="1.4" fill="#B57E59"/><circle cx="12.5" cy="10.8" r="1.5" fill="#B57E59"/><circle cx="15" cy="11.4" r="1.2" fill="#B57E59"/>
+      </svg>
+      <span id="lblBowl">Napf</span>
+    </button>
+    <button type="button" class="dock-btn" data-treat="bone">
+      <svg class="dock-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M7.5 10.2h9v3.6h-9z" fill="#E8D8C3"/>
+        <circle cx="6.5" cy="9.4" r="2.6" fill="#EFE2D0"/><circle cx="6.5" cy="14.6" r="2.6" fill="#EFE2D0"/>
+        <circle cx="17.5" cy="9.4" r="2.6" fill="#EFE2D0"/><circle cx="17.5" cy="14.6" r="2.6" fill="#EFE2D0"/>
+      </svg>
+      <span id="lblBone">Knochen</span>
+    </button>
+    <button type="button" class="dock-btn" data-treat="biscuit">
+      <svg class="dock-ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="7.5" fill="#EEB66E"/>
+        <circle cx="9.2" cy="10" r="1.2" fill="#B67635"/><circle cx="14.6" cy="9.5" r="1.1" fill="#B67635"/>
+        <circle cx="13.8" cy="14.8" r="1.3" fill="#B67635"/><circle cx="9.6" cy="14.5" r="1" fill="#B67635"/>
+      </svg>
+      <span id="lblBiscuit">Keks</span>
+    </button>
+    <button type="button" class="dock-btn action" id="btnCall">
+      <svg class="dock-ico" viewBox="0 0 24 24" fill="none" stroke="#6E9470" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 17.5V7l10-2v10.5"/>
+        <circle cx="6.5" cy="17.5" r="2.5" fill="#8FB390"/><circle cx="16.5" cy="15.5" r="2.5" fill="#8FB390"/>
+      </svg>
+      <span id="lblCall">Rufen</span>
+    </button>
+  </div>
+
+  <!-- Focus Zen Bar (shown calmly while Focus Session runs) -->
+  <div id="focusZenBar" hidden>
+    <button type="button" class="zen-timer-btn" id="btnZenOpen">
+      <span class="zen-dot" aria-hidden="true"></span>
+      <span class="zen-badge" id="lblZenBadge">Fokus-Modus</span>
+      <span class="zen-time" id="zenCountdown">25:00</span>
+    </button>
+    <button type="button" class="zen-rain-btn" id="btnZenRain" aria-pressed="true">
+      <span aria-hidden="true">🌧</span>
+      <span id="lblZenRain">Regen an</span>
+    </button>
+  </div>
+
+  <!-- Focus Timer Sheet -->
+  <dialog id="dlgFocus" class="sheet" closedby="any" aria-labelledby="dlgFocusTitle">
+    <div class="sheet-grabber" aria-hidden="true"></div>
+    <div class="sheet-head">
+      <h2 id="dlgFocusTitle">Fokus-Session</h2>
+      <button type="button" class="close-btn" id="closeFocusBtn" aria-label="Schließen">✕</button>
+    </div>
+    <p id="dlgFocusDesc" class="sheet-desc"></p>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <span class="stat-val" id="statStreak">0</span>
+        <span class="stat-lbl" id="lblStreak">Streak</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-val" id="statMinutes">0</span>
+        <span class="stat-lbl" id="lblTotalMin">Gesamt</span>
+      </div>
+    </div>
+
+    <div id="focusIdlePanel">
+      <div class="preset-grid" id="focusPresets"></div>
+      <button type="button" class="primary-btn" id="btnStartFocus" autofocus>Fokus starten</button>
+    </div>
+
+    <div id="focusActivePanel" hidden>
+      <div class="timer-readout" id="focusCountdown">25:00</div>
+      <p class="sheet-note" id="focusActiveNote"></p>
+      <button type="button" class="danger-btn" id="btnCancelFocus">Session beenden</button>
+    </div>
+  </dialog>
+
+  <!-- Style & Daily Care Sheet -->
+  <dialog id="dlgCoats" class="sheet" closedby="any" aria-labelledby="dlgCoatsTitle">
+    <div class="sheet-grabber" aria-hidden="true"></div>
+    <div class="sheet-head">
+      <h2 id="dlgCoatsTitle">Style &amp; Tagespflege</h2>
+      <button type="button" class="close-btn" id="closeCoatsBtn" aria-label="Schließen">✕</button>
+    </div>
+
+    <div class="sheet-tabs" role="tablist" aria-label="Style">
+      <button type="button" class="tab-btn" id="tabBtnAccessories" role="tab" aria-selected="true" data-tab="accessories">Accessoires</button>
+      <button type="button" class="tab-btn" id="tabBtnCoats" role="tab" aria-selected="false" data-tab="coats">Felle</button>
+      <button type="button" class="tab-btn" id="tabBtnDaily" role="tab" aria-selected="false" data-tab="daily">Tagespflege</button>
+    </div>
+
+    <section class="sheet-section" id="panelAccessories">
+      <h3 id="lblAccessoriesSection">3D-Accessoires</h3>
+      <div class="style-grid" id="accessoryGrid"></div>
+    </section>
+
+    <section class="sheet-section" id="panelCoats" hidden>
+      <h3 id="lblCoatsSection">Shiba-Fellfarben</h3>
+      <div class="style-grid" id="coatGrid"></div>
+    </section>
+
+    <section class="sheet-section" id="panelDaily" hidden>
+      <h3 id="lblDailySection">Tagespflege</h3>
+      <ul class="daily-list" id="dailyList"></ul>
+      <div class="coming-soon">
+        <h3 id="lblComingSoonTitle">Nächstes Update</h3>
+        <p id="lblComingSoonDesc"></p>
+      </div>
+    </section>
+  </dialog>
+
+  <!-- Settings Sheet -->
+  <dialog id="dlgSettings" class="sheet" closedby="any" aria-labelledby="dlgSettingsTitle">
+    <div class="sheet-grabber" aria-hidden="true"></div>
+    <div class="sheet-head">
+      <h2 id="dlgSettingsTitle">Einstellungen</h2>
+      <button type="button" class="close-btn" id="closeSettingsBtn" aria-label="Schließen">✕</button>
+    </div>
+
+    <div class="settings-list">
+      <div class="setting-row">
+        <span id="lblSettingLang">Sprache</span>
+        <div class="segmented" role="group" aria-label="Sprache">
+          <button type="button" class="seg-btn" id="btnLangDe" data-lang="de">DE</button>
+          <button type="button" class="seg-btn" id="btnLangEn" data-lang="en">EN</button>
+        </div>
+      </div>
+      <div class="setting-row">
+        <span id="lblSettingSound">Ton &amp; Effekte</span>
+        <button type="button" class="pill" id="btnToggleSound" aria-pressed="true">An</button>
+      </div>
+      <div class="setting-row">
+        <span id="lblSettingRain">Fokus-Regen</span>
+        <button type="button" class="pill" id="btnToggleRain" aria-pressed="true">An</button>
+      </div>
+      <div class="setting-row">
+        <span id="lblSettingHaptics">Haptik</span>
+        <button type="button" class="pill" id="btnToggleHaptics" aria-pressed="true">An</button>
+      </div>
+      <div class="setting-row">
+        <span id="lblSettingMotion">Bewegung (Kippen)</span>
+        <button type="button" class="pill" id="btnToggleMotion" aria-pressed="true">An</button>
+      </div>
+      <div class="setting-row">
+        <span id="lblSettingBall">Spielball</span>
+        <button type="button" class="pill" id="btnToggleBall" aria-pressed="true">An</button>
+      </div>
+      <div class="setting-row">
+        <span id="lblSettingReset">Szene</span>
+        <button type="button" class="pill" id="btnResetScene">Reset</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
