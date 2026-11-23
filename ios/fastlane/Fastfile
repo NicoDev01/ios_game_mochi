@@ -1,5 +1,6 @@
 require "securerandom"
 
+opt_out_usage
 default_platform(:ios)
 
 platform :ios do
@@ -49,13 +50,30 @@ platform :ios do
         is_key_content_base64: true
       )
 
-      get_provisioning_profile(
+      # Exakte Certificate-ID des importierten .p12 per Seriennummer auflösen (wichtig bei mehreren Distribution-Certs im Account)
+      cert_id = nil
+      begin
+        serial_out = sh("security find-certificate -a -p #{keychain_name} | openssl x509 -noout -serial", log: false)
+        local_serial = serial_out.to_s.sub(/^serial=/i, "").strip.upcase.sub(/^0+/, "")
+        unless local_serial.empty?
+          require "spaceship"
+          certs = Spaceship::ConnectAPI::Certificate.all(filter: { certificateType: "DISTRIBUTION,IOS_DISTRIBUTION" })
+          matched = certs.find { |c| c.serial_number.to_s.strip.upcase.sub(/^0+/, "") == local_serial }
+          cert_id = matched.id if matched
+          UI.message("Matched Apple Distribution cert_id=#{cert_id}") if cert_id
+        end
+      rescue StandardError => e
+        UI.message("cert_id auto-detection skipped: #{e.message}")
+      end
+
+      sigh_opts = {
         api_key: api_key,
         app_identifier: bundle_id,
         team_id: team_id,
-        force: true,
-        readonly: false
-      )
+        force: true
+      }
+      sigh_opts[:cert_id] = cert_id if cert_id
+      get_provisioning_profile(sigh_opts)
       profile_name = lane_context[SharedValues::SIGH_NAME]
 
       update_code_signing_settings(
