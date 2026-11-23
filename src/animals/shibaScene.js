@@ -753,41 +753,68 @@ export function mountShibaScene(container, hooks = {}) {
   }
 
   // ===========================================================================
-  // 3D-Rounded-Box-SDF (glitchfreies Wand- & Glasscheiben-Abflachen)
+  // 3D-Frustum-Raum-Ebenen (Screen-Ränder erweitern sich perspektivisch nach hinten!)
   // ===========================================================================
+  const frustum = {
+    planes: [], // [{ nx, ny, nz, d, tag }]
+    knee: 0.025,
+    scaleAtZ(z) {
+      return 1 + (room.halfD - z) / camCfg.dFront;
+    },
+    boundsAtZ(z) {
+      const s = this.scaleAtZ(z);
+      return {
+        maxX: room.halfW * s,
+        maxY: camCfg.baseEyeY + (room.ceil - camCfg.baseEyeY) * s,
+      };
+    },
+    rebuild() {
+      const d = camCfg.dFront;
+      const hw = room.halfW;
+      const hd = room.halfD;
+      const eyeY = camCfg.baseEyeY;
+      const topH = room.ceil - eyeY;
+
+      const lLen = Math.hypot(d, hw);
+      const cLen = Math.hypot(d, topH);
+
+      this.planes = [
+        { nx: 0,           ny: 1,         nz: 0,           d: 0,                                    tag: 'floor' },
+        { nx: 0,           ny: -d / cLen, nz: -topH / cLen, d: -(eyeY * d + topH * (d + hd)) / cLen, tag: 'ceil'  },
+        { nx:  d / lLen,   ny: 0,         nz: -hw / lLen,   d: -(hw * (d + hd)) / lLen,              tag: 'left'  },
+        { nx: -d / lLen,   ny: 0,         nz: -hw / lLen,   d: -(hw * (d + hd)) / lLen,              tag: 'right' },
+        { nx: 0,           ny: 0,         nz: 1,           d: -hd,                                  tag: 'back'  },
+        { nx: 0,           ny: 0,         nz: -1,          d: -hd,                                  tag: 'front' },
+      ];
+    },
+  };
+
   const _sdfOut = { pen: 0, nx: 0, ny: 0, nz: 0, corner: 0 };
-  function evalInsideRoundedBox(wx, wy, wz, box) {
-    const dx = Math.abs(wx - box.cx) - box.hx;
-    const dy = Math.abs(wy - box.cy) - box.hy;
-    const dz = Math.abs(wz - box.cz) - box.hz;
-    const ox = Math.max(dx, 0), oy = Math.max(dy, 0), oz = Math.max(dz, 0);
-    const outLen = Math.hypot(ox, oy, oz);
-    const distOutside = outLen > 1e-6 ? (outLen - box.r) : (Math.max(dx, dy, dz) - box.r);
-    _sdfOut.pen = distOutside;
-    if (distOutside <= -box.knee) {
-      _sdfOut.nx = _sdfOut.ny = _sdfOut.nz = _sdfOut.corner = 0;
-      return _sdfOut;
+  function evalInsideFrustum(wx, wy, wz) {
+    let maxPen = -1e9;
+    let bnx = 0, bny = 0, bnz = 0;
+    let activeCount = 0;
+    const knee = frustum.knee;
+    const planes = frustum.planes;
+    for (let i = 0; i < planes.length; i++) {
+      const pl = planes[i];
+      const pen = -(pl.nx * wx + pl.ny * wy + pl.nz * wz - pl.d);
+      if (pen > -knee) {
+        if (pen > 0.005) activeCount++;
+        if (pen > maxPen) {
+          maxPen = pen;
+          bnx = pl.nx; bny = pl.ny; bnz = pl.nz;
+        }
+      }
     }
-    const sx = wx >= box.cx ? -1 : 1;
-    const sy = wy >= box.cy ? -1 : 1;
-    const sz = wz >= box.cz ? -1 : 1;
-    if (outLen > 1e-5) {
-      _sdfOut.nx = sx * (ox / outLen);
-      _sdfOut.ny = sy * (oy / outLen);
-      _sdfOut.nz = sz * (oz / outLen);
-      const active = (ox > 0.005 ? 1 : 0) + (oy > 0.005 ? 1 : 0) + (oz > 0.005 ? 1 : 0);
-      _sdfOut.corner = active >= 2 ? clamp(Math.min(ox || 1, oy || 1, oz || 1) / box.r + 0.45, 0, 1) : 0;
-    } else {
-      if (dx >= dy && dx >= dz) { _sdfOut.nx = sx; _sdfOut.ny = 0; _sdfOut.nz = 0; }
-      else if (dy >= dz)        { _sdfOut.nx = 0; _sdfOut.ny = sy; _sdfOut.nz = 0; }
-      else                      { _sdfOut.nx = 0; _sdfOut.ny = 0; _sdfOut.nz = sz; }
-      _sdfOut.corner = 0;
-    }
+    _sdfOut.pen = maxPen;
+    _sdfOut.nx = bnx; _sdfOut.ny = bny; _sdfOut.nz = bnz;
+    _sdfOut.corner = activeCount >= 2 ? 0.75 : 0;
     return _sdfOut;
   }
 
   // ===========================================================================
-  // Mochi-Shiba bauen (Original mochi_shiba.html Proportionen + 12 Mimiken)
+  // Mochi-Shiba bauen (Original mochi_shiba.html Style: EINE saubere Außen-Outline!)
   // ===========================================================================
   function buildShiba(coat, lightDir) {
     const matBody = createShibaBodyMaterial(coat, lightDir);
@@ -801,8 +828,30 @@ export function mountShibaScene(container, hooks = {}) {
       innerLitHex: coat.creamLit, innerShadowHex: coat.creamShadow,
       lightDir, mode: 'tail',
     });
-    const outBody = createOutlineMaterial({ inkHex: SHARED.ink, thicknessPx: 3.9, depthBias: 0.00045 });
-    const outPart = createOutlineMaterial({ inkHex: SHARED.ink, thicknessPx: 3.4, depthBias: 0.00065 });
+
+    // Einheitlicher Stencil für Körper + Ohren -> EINE durchgehende Außenlinie ohne störende Ohr-Innenlinien!
+    matBody.stencilWrite = true;
+    matBody.stencilRef = 1;
+    matBody.stencilFunc = THREE.AlwaysStencilFunc;
+    matBody.stencilZPass = THREE.ReplaceStencilOp;
+
+    matEar.stencilWrite = true;
+    matEar.stencilRef = 1;
+    matEar.stencilFunc = THREE.AlwaysStencilFunc;
+    matEar.stencilZPass = THREE.ReplaceStencilOp;
+
+    const outBody = createOutlineMaterial({ inkHex: SHARED.ink, thicknessPx: 4.0, depthBias: 0.0004 });
+    outBody.stencilWrite = true;
+    outBody.stencilRef = 1;
+    outBody.stencilFunc = THREE.NotEqualStencilFunc;
+
+    const outEar = createOutlineMaterial({ inkHex: SHARED.ink, thicknessPx: 3.6, depthBias: 0.0005 });
+    outEar.stencilWrite = true;
+    outEar.stencilRef = 1;
+    outEar.stencilFunc = THREE.NotEqualStencilFunc;
+
+    // Schwanz behält klassische Tiefen-Outline wie mochi_shiba.html (damit die Spirale von hinten klar lesbar bleibt!)
+    const outTail = createOutlineMaterial({ inkHex: SHARED.ink, thicknessPx: 3.5, depthBias: 0.0006 });
 
     const mkFaceMat = (color, extra = {}) => new THREE.MeshBasicMaterial({
       color, side: THREE.DoubleSide,
@@ -821,14 +870,17 @@ export function mountShibaScene(container, hooks = {}) {
     const bodyGeo = quadMeshToGeometry(buildShibaBodyQuadMesh());
     const bodyRest = new Float32Array(bodyGeo.attributes.position.array);
     const body = new THREE.Mesh(bodyGeo, matBody);
-    body.add(new THREE.Mesh(bodyGeo, outBody));
+    body.renderOrder = 1;
+    const bodyOutline = new THREE.Mesh(bodyGeo, outBody);
+    bodyOutline.renderOrder = 2;
+    body.add(bodyOutline);
     meshCol.add(body);
 
     let maxY = 0;
     for (let i = 1; i < bodyRest.length; i += 3) maxY = Math.max(maxY, bodyRest[i]);
     const centerY = maxY / 2;
 
-    // Exakte Ohr-Anbringung aus mochi_shiba.html (kompakt & knuffig im Schädel verankert!)
+    // Exakte Ohr-Anbringung aus mochi_shiba.html (kompakt im Schädel, nahtlose Außenlinie!)
     const earQM = buildShibaEarQuadMesh();
     const makeEar = (side) => {
       const geo = quadMeshToGeometry(earQM, ([, vy]) => {
@@ -843,13 +895,16 @@ export function mountShibaScene(container, hooks = {}) {
       pivot.rotation.order = 'ZYX';
       g.add(pivot);
       const m = new THREE.Mesh(geo, matEar);
-      m.position.y = 0.070;
-      m.add(new THREE.Mesh(geo, outPart));
+      m.position.y = 0.056; // exakt mochi_shiba.html!
+      m.renderOrder = 1;
+      const earOut = new THREE.Mesh(geo, outEar);
+      earOut.renderOrder = 2;
+      m.add(earOut);
       pivot.add(m);
       meshCol.add(g);
       const ear = {
         group: g, pivot, geo, rest: new Float32Array(geo.attributes.position.array), side,
-        patch, offset: -0.012, baseQuat: new THREE.Quaternion().setFromEuler(baseRot),
+        patch, offset: -0.024, baseQuat: new THREE.Quaternion().setFromEuler(baseRot),
         restNrm: new THREE.Vector3(), lastTwitch: -999, lastPlane: -999,
       };
       const initP = new THREE.Vector3();
@@ -874,7 +929,10 @@ export function mountShibaScene(container, hooks = {}) {
     const tailPivot = new THREE.Group();
     tailGroup.add(tailPivot);
     const tailMesh = new THREE.Mesh(tailGeo, matTail);
-    tailMesh.add(new THREE.Mesh(tailGeo, outPart));
+    tailMesh.renderOrder = 1;
+    const tailOutline = new THREE.Mesh(tailGeo, outTail);
+    tailOutline.renderOrder = 2;
+    tailMesh.add(tailOutline);
     tailPivot.add(tailMesh);
     meshCol.add(tailGroup);
 
@@ -1137,19 +1195,19 @@ export function mountShibaScene(container, hooks = {}) {
     const zFwd = new THREE.Vector3(0, 0, 1), zBack = new THREE.Vector3(0, 0, -1);
     const tmpBlend = new THREE.Vector3(), tmpQ = new THREE.Quaternion();
 
-    function deformBody(def, baseMat, invBaseMat, roundBox) {
+    function deformBody(def, baseMat, invBaseMat) {
       const pos = bodyGeo.attributes.position;
       const mB = baseMat.elements, mI = invBaseMat.elements;
 
       const bodyStretch = def.bodyStretch || 0;
       const headPitch = def.headPitch || 0;
       const headRoll = def.headRoll || 0;
-      // Extremes Marshmallow-Squash & Stretch (wie Pfannkuchen-Splat & Sprung-Dehnung im Referenzvideo!)
-      const sx = clamp((1 + def.jx) * (1 - bodyStretch * 0.10), 0.56, 1.74);
-      const sy = clamp((1 + def.jy) * (1 - bodyStretch * 0.18), 0.32, 1.62);
-      const sz = clamp((1 / Math.sqrt(sx * sy)) * (1 + bodyStretch * 0.34), 0.58, 1.72);
+      // Natürliches, knackiges Mochi-Squash & Stretch (nicht übertrieben/verzögert!)
+      const sx = clamp((1 + def.jx) * (1 - bodyStretch * 0.10), 0.72, 1.38);
+      const sy = clamp((1 + def.jy) * (1 - bodyStretch * 0.18), 0.56, 1.32);
+      const sz = clamp((1 / Math.sqrt(sx * sy)) * (1 + bodyStretch * 0.30), 0.74, 1.38);
       const breath = def.breath;
-      const bXZ = 1 + 0.15 * breath, bY = 1 - 0.20 * breath;
+      const bXZ = 1 + 0.14 * breath, bY = 1 - 0.18 * breath;
 
       const shearX = def.shearX, shearZ = def.shearZ, bendX = def.bendX, bendY = def.bendY;
       const stAmt = def.stretch, stX = def.stLocalX, stY = def.stLocalY, stZ = def.stLocalZ;
@@ -1215,27 +1273,29 @@ export function mountShibaScene(container, hooks = {}) {
         let wy = mB[1]*lx + mB[5]*ly + mB[9]*lz + mB[13];
         let wz = mB[2]*lx + mB[6]*ly + mB[10]*lz + mB[14];
 
-        const sdf = evalInsideRoundedBox(wx, wy, wz, roundBox);
-        if (sdf.pen > -roundBox.knee) {
+        const sdf = evalInsideFrustum(wx, wy, wz);
+        if (sdf.pen > -frustum.knee) {
           let push = 0;
-          if (sdf.pen >= roundBox.knee) push = sdf.pen;
-          else { const t = (sdf.pen + roundBox.knee)/(2*roundBox.knee); push = roundBox.knee*0.5*t*t; }
+          if (sdf.pen >= frustum.knee) push = sdf.pen;
+          else { const t = (sdf.pen + frustum.knee)/(2*frustum.knee); push = frustum.knee*0.5*t*t; }
           if (push > 0) {
             wx += sdf.nx*push; wy += sdf.ny*push; wz += sdf.nz*push;
             maxWallPen = Math.max(maxWallPen, push);
-            // Saftige Marshmallow-Pfannkuchen-Wulst an Wand, Boden, Decke & Frontscheibe!
-            const ba = Math.min(push, 0.34) * 0.72 * (1 - sdf.corner * 0.78);
+            // Natürliches, sofortiges Mochi-Abflachen an den unsichtbaren Wänden
+            const ba = Math.min(push, 0.22) * 0.52 * (1 - sdf.corner * 0.78);
             if (ba > 0.001) {
               const rx = wx-def.bodyX, ry = wy-def.bodyY, rz = wz-def.bodyZ;
               const rN = rx*sdf.nx + ry*sdf.ny + rz*sdf.nz;
-              wx += clamp(rx-sdf.nx*rN,-0.78,0.78)*ba;
-              wy += clamp(ry-sdf.ny*rN,-0.68,0.68)*ba;
-              wz += clamp(rz-sdf.nz*rN,-0.68,0.68)*ba;
-              const s2 = evalInsideRoundedBox(wx, wy, wz, roundBox);
+              wx += clamp(rx-sdf.nx*rN,-0.62,0.62)*ba;
+              wy += clamp(ry-sdf.ny*rN,-0.54,0.54)*ba;
+              wz += clamp(rz-sdf.nz*rN,-0.54,0.54)*ba;
+              const s2 = evalInsideFrustum(wx, wy, wz);
               if (s2.pen > 0) { wx += s2.nx*s2.pen; wy += s2.ny*s2.pen; wz += s2.nz*s2.pen; }
             }
           }
         }
+        // Pfoten bleiben strikt auf/über Y = 0.0 -> Schatten kann niemals über die Füße ragen!
+        if (wy < 0.0) wy = 0.0;
 
         pos.setXYZ(i,
           mI[0]*wx + mI[4]*wy + mI[8]*wz + mI[12],
@@ -1350,10 +1410,12 @@ export function mountShibaScene(container, hooks = {}) {
       deformBody, applyTail, applyEar, applyFace,
       setResolution: (w, h, refDist) => {
         outBody.uniforms.uResolution.value.set(w, h);
-        outPart.uniforms.uResolution.value.set(w, h);
+        outEar.uniforms.uResolution.value.set(w, h);
+        outTail.uniforms.uResolution.value.set(w, h);
         if (refDist) {
           outBody.uniforms.uRefDist.value = refDist;
-          outPart.uniforms.uRefDist.value = refDist;
+          outEar.uniforms.uRefDist.value = refDist;
+          outTail.uniforms.uRefDist.value = refDist;
         }
       },
     };
@@ -1536,7 +1598,7 @@ export function mountShibaScene(container, hooks = {}) {
     window.matchMedia?.('(pointer: coarse)')?.matches ||
     /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
   );
-  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+  const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.toneMapping = THREE.NoToneMapping;
   container.appendChild(renderer.domElement);
@@ -1546,15 +1608,14 @@ export function mountShibaScene(container, hooks = {}) {
   const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.2, 45);
 
   // Raum-Geometrie passt sich exakt dem iPhone-Screen-Seitenverhältnis an!
-  const room = { halfW: 1.65, halfD: 2.30, floor: 0.0, ceil: 5.80 };
-  const roundBox = { cx: 0, cy: 2.90, cz: 0, r: 0.20, knee: 0.025, hx: 1.45, hy: 2.70, hz: 2.10 };
-  const camCfg = { dFront: 5.0, baseEyeY: 2.2 };
+  const room = { halfW: 1.24, halfD: 2.00, floor: 0.0, ceil: 4.90 };
+  const camCfg = { dFront: 4.30, baseEyeY: 1.15 };
 
   const LA = deg(34), LE = deg(50);
   const lightDir = new THREE.Vector3(Math.cos(LE)*Math.sin(LA), Math.sin(LE), Math.cos(LE)*Math.cos(LA)).normalize();
 
   // ===========================================================================
-  // Reiner moderner Studio-Space (#D4D3CC wie mochi_shiba.html) mit unsichtbaren 3D-Wänden!
+  // Reiner weißer Studio-Space mit unsichtbaren 3D-Frustum-Wänden!
   // ===========================================================================
   const shiba = buildShiba(COAT, lightDir);
   shiba.root.matrixAutoUpdate = false;
@@ -1562,25 +1623,28 @@ export function mountShibaScene(container, hooks = {}) {
 
   const fx = createFXSystem(scene, camera);
 
-  // Flacher 2D-Cel-Bodenschatten exakt wie in mochi_shiba.html
+  // Flacher 2D-Cel-Bodenschatten EXAKT wie in mochi_shiba.html:
+  // transparent: false + renderOrder: -10 + depthWrite: false -> rendert GARANTIERT VOR den Pfoten!
   const shibaShadow = (() => {
     const g = new THREE.CircleGeometry(1, 64);
     g.rotateX(-Math.PI / 2);
     const mat = new THREE.ShaderMaterial({
-      transparent: true, depthWrite: false,
-      polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+      transparent: false,
+      depthWrite: false,
+      depthTest: true,
       uniforms: {
-        uColor: { value: new THREE.Color(SHARED.groundShad) },
-        uOpacity: { value: 0.84 },
+        uColor:   { value: new THREE.Color(SHARED.groundShad) },
+        uBgColor: { value: new THREE.Color(SHARED.bg) },
+        uOpacity: { value: 0.86 },
       },
       vertexShader: `varying vec2 vUv; void main(){ vUv=uv*2.0-1.0; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
-      fragmentShader: `uniform vec3 uColor; uniform float uOpacity; varying vec2 vUv;
+      fragmentShader: `uniform vec3 uColor; uniform vec3 uBgColor; uniform float uOpacity; varying vec2 vUv;
         void main(){
           float r = length(vUv);
           if (r > 1.0) discard;
           float aa = max(fwidth(r) * 1.2, 0.012);
           float alpha = (1.0 - smoothstep(1.0 - aa, 1.0, r)) * uOpacity;
-          gl_FragColor = vec4(uColor, alpha);
+          gl_FragColor = vec4(mix(uBgColor, uColor, alpha), 1.0);
           #include <colorspace_fragment>
         }`,
     });
@@ -1597,7 +1661,7 @@ export function mountShibaScene(container, hooks = {}) {
   const view = {
     peekX: 0, peekY: 0,
     targetPeekX: 0, targetPeekY: 0,
-    eyeX: 0, eyeY: 2.2,
+    eyeX: 0, eyeY: 1.15,
   };
 
   function updateCamera(dt, shake) {
@@ -1644,55 +1708,40 @@ export function mountShibaScene(container, hooks = {}) {
     const aspect = w / Math.max(h, 1);
 
     if (aspect < 0.85) {
-      // iPhone / Portrait: Großer, griffiger Mochi-Shiba (~45–55% Screen-Breite, 65% beim Splat wie im Video!)
-      room.halfW = 1.20;
-      room.ceil  = clamp(room.halfW * 2 / aspect - 0.30, 3.9, 4.95);
-      room.halfD = 1.95;
+      // iPhone / Portrait: niedrige Augenhöhe wie mochi_shiba.html + Frustum wächst nach hinten mit den Screen-Rändern!
+      room.halfW = 1.24;
+      room.ceil  = clamp(room.halfW * 2 / aspect - 0.36, 4.0, 5.10);
+      room.halfD = 2.00;
       camCfg.dFront = 4.30;
-      camCfg.baseEyeY = room.ceil * 0.30;
+      camCfg.baseEyeY = 1.15;
     } else {
       // Desktop / Landscape / iPad
       room.ceil  = 3.45;
       room.halfW = clamp(((room.ceil + 0.35) * aspect) / 2, 1.75, 3.20);
       room.halfD = 2.15;
       camCfg.dFront = 4.10;
-      camCfg.baseEyeY = room.ceil * 0.34;
+      camCfg.baseEyeY = 1.05;
     }
 
-    roundBox.cx = 0;
-    roundBox.cy = room.ceil / 2;
-    roundBox.cz = 0;
-    roundBox.r  = 0.20;
-    roundBox.knee = 0.025;
-    roundBox.hx = room.halfW - roundBox.r;
-    roundBox.hy = room.ceil / 2 - roundBox.r;
-    roundBox.hz = room.halfD - roundBox.r;
-
+    frustum.rebuild();
     renderer.setSize(w, h);
     shiba.setResolution(w, h, camCfg.dFront + room.halfD * 0.72);
     updateCamera(1, 0);
   }
 
   // ===========================================================================
-  // 3D-Physik (ultra-reaktiv, federnd-elastisch + Frontscheiben-Splat!)
+  // 3D-Physik (direkt, ohne Verzögerung, natürliche elastische Bounces!)
   // ===========================================================================
   const RX = 0.66, RY = shiba.centerY, RZ = 0.62;
-  const MASS = 1.0, INERTIA = 0.20, G = 18.5, MAX_THROW = 30;
+  const MASS = 1.0, INERTIA = 0.20, G = 22.0, MAX_THROW = 34;
 
   const body = {
-    x: 0.0, y: RY + 0.02, z: 0.65,
+    x: 0.0, y: RY + 0.01, z: 0.65,
     vx: 0, vy: 0, vz: 0,
     quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, deg(16), 0)),
     ox: 0, oy: 0, oz: 0,
     onFloor: true,
     wallPress: 0,
-    wallStickT: 0,
-    wallStickTag: null,
-    wallStickNx: 0,
-    wallStickNy: 0,
-    wallStickNz: 0,
-    wallReboundSpd: 0,
-    wallSplatCd: 0,
   };
 
   const soft = {
@@ -1731,37 +1780,17 @@ export function mountShibaScene(container, hooks = {}) {
     const vn = vcx*nx + vcy*ny + vcz*nz;
 
     const grabbed = ptr.grabbed === 'shiba';
-    const isFloor = ny > 0.5;
+    const isFloor = wallTag === 'floor';
     const isFrontGlass = wallTag === 'front';
 
-    // Marshmallow-Wandklatscher an JEDER unsichtbaren Wand (links, rechts, Decke, Rückwand, Frontglas!)
-    if (!isFloor && !grabbed && -vn > 4.2 && body.wallSplatCd <= 0) {
-      body.wallStickT = clamp(0.18 + (-vn - 4.2) * 0.020, 0.18, 0.36);
-      body.wallStickTag = wallTag;
-      body.wallStickNx = nx;
-      body.wallStickNy = ny;
-      body.wallStickNz = nz;
-      body.wallReboundSpd = clamp(-vn * 0.50, 2.2, 7.6);
-      body.wallSplatCd = 0.42;
-      // Geschwindigkeit an der Wand weich dämpfen, damit er sich sichtbar flachdrückt!
-      body.vx *= 0.18;
-      body.vy *= 0.18;
-      body.vz *= 0.18;
-      events.push({
-        nx, ny, nz, speed: -vn,
-        cx: body.x + rx, cy: body.y + ry, cz: isFrontGlass ? room.halfD : body.z + rz,
-        kind: isFrontGlass ? 'glass' : 'splat',
-      });
-    }
-
-    const maxComp = h * (grabbed ? 0.48 : 0.44);
+    // Kein künstliches Ankleben/Delay -> sofortige, knackige elastische Kollision!
+    const maxComp = h * (grabbed ? 0.34 : 0.26);
     const penC = Math.min(pen, maxComp);
     const isRestFloor = isFloor && !grabbed;
-    const sticking = body.wallStickT > 0 && body.wallStickTag === wallTag;
 
-    const kWall = grabbed ? 120 : isRestFloor ? 980 : sticking ? 75 : 220;
-    const kSq   = grabbed ? 400 : isRestFloor ? 1380 : sticking ? 210 : 540;
-    const damp  = grabbed ? 12 : isRestFloor ? 13.5 : sticking ? 20 : 6.8;
+    const kWall = grabbed ? 150 : isRestFloor ? 1250 : 340;
+    const kSq   = grabbed ? 480 : isRestFloor ? 1700 : 760;
+    const damp  = grabbed ? 14 : isRestFloor ? 16.0 : 8.5;
     const fn = Math.max(0, kWall * penC + kSq * penC * penC - damp * vn);
 
     body.vx += (nx*fn/MASS)*hStep;
@@ -1769,37 +1798,36 @@ export function mountShibaScene(container, hooks = {}) {
     body.vz += (nz*fn/MASS)*hStep;
     if (!grabbed) {
       const fx = nx*fn, fy = ny*fn, fz = nz*fn;
-      body.ox += ((ry*fz - rz*fy)/INERTIA)*hStep*0.62;
-      body.oy += ((rz*fx - rx*fz)/INERTIA)*hStep*0.62;
-      body.oz += ((rx*fy - ry*fx)/INERTIA)*hStep*0.62;
+      body.ox += ((ry*fz - rz*fy)/INERTIA)*hStep*0.58;
+      body.oy += ((rz*fx - rx*fz)/INERTIA)*hStep*0.58;
+      body.oz += ((rx*fy - ry*fx)/INERTIA)*hStep*0.58;
     }
     if (pen > maxComp) {
       const ex = pen - maxComp;
       body.x += nx*ex; body.y += ny*ex; body.z += nz*ex;
       if (vn < 0) {
-        // Super-elastischer Mochi-Bounce!
-        const b = grabbed ? 0.06 : sticking ? 0.04 : isFloor ? 0.52 : 0.68;
+        const b = grabbed ? 0.05 : isFloor ? 0.44 : 0.60;
         body.vx -= (1+b)*vn*nx; body.vy -= (1+b)*vn*ny; body.vz -= (1+b)*vn*nz;
       }
     }
     const vtx = vcx - vn*nx, vty = vcy - vn*ny, vtz = vcz - vn*nz, vtLen = Math.hypot(vtx,vty,vtz);
     if (vtLen > 1e-4) {
-      const fric = grabbed ? 0.22 : sticking ? 0.72 : isFloor ? 0.38 : 0.22;
+      const fric = grabbed ? 0.20 : isFloor ? 0.40 : 0.22;
       const fMag = Math.min(vtLen*16, fric * fn);
       const ftx = -(vtx/vtLen)*fMag, fty = -(vty/vtLen)*fMag, ftz = -(vtz/vtLen)*fMag;
       body.vx += (ftx/MASS)*hStep; body.vy += (fty/MASS)*hStep; body.vz += (ftz/MASS)*hStep;
       if (!grabbed) {
-        const aS = Math.abs(vn) < 0.9 && isFloor ? 0.22 : 0.68;
+        const aS = Math.abs(vn) < 0.9 && isFloor ? 0.22 : 0.65;
         body.ox += ((ry*ftz - rz*fty)/INERTIA)*hStep*aS;
         body.oy += ((rz*ftx - rx*ftz)/INERTIA)*hStep*aS;
         body.oz += ((rx*fty - ry*ftx)/INERTIA)*hStep*aS;
       }
     }
-    if (!sticking && -vn > 1.6 && pen < 0.20) {
+    if (!grabbed && -vn > 1.8 && pen < 0.22) {
       events.push({
         nx, ny, nz, speed: -vn,
-        cx: body.x+rx, cy: body.y+ry, cz: body.z+rz,
-        kind: (isFloor && -vn > 5.5) ? 'pancake' : 'wall',
+        cx: body.x+rx, cy: body.y+ry, cz: isFrontGlass ? room.halfD : body.z+rz,
+        kind: isFrontGlass ? 'glass' : (isFloor && -vn > 5.8) ? 'pancake' : 'wall',
       });
     }
     return penC / h;
@@ -1858,8 +1886,9 @@ export function mountShibaScene(container, hooks = {}) {
         this.enter('stretch', 0.85);
         return;
       }
-      this.targetX = clamp(x, -room.halfW + 0.68, room.halfW - 0.68);
       this.targetZ = clamp(z, -room.halfD + 0.68, room.halfD - 0.64);
+      const bnd = frustum.boundsAtZ(this.targetZ);
+      this.targetX = clamp(x, -bnd.maxX + 0.68, bnd.maxX - 0.68);
       this.enter('comeToSpot', 5.2);
       if (excited) {
         fx.spawnNote(body.x, body.y, body.z);
@@ -1899,8 +1928,9 @@ export function mountShibaScene(container, hooks = {}) {
       }
       // 40%: Tief in den 3D-Raum wandern (auch ganz nach hinten!) & schnüffeln
       for (let tries = 0; tries < 6; tries++) {
-        const rx = (Math.random() - 0.5) * (room.halfW * 1.45);
         const rz = (Math.random() - 0.5) * (room.halfD * 1.50);
+        const bnd = frustum.boundsAtZ(rz);
+        const rx = (Math.random() - 0.5) * (bnd.maxX * 1.45);
         if (Math.hypot(rx - body.x, rz - body.z) > 0.9) {
           this.targetX = rx; this.targetZ = rz; break;
         }
@@ -1918,7 +1948,7 @@ export function mountShibaScene(container, hooks = {}) {
         this.energy = clamp(this.energy - dt * 0.010, 0, 1);
       }
 
-      const busy = ptr.grabbed === 'shiba' || body.wallStickT > 0 || mood.winceT > 0 || mood.dazeT > 0 || mood.huffT > 0;
+      const busy = ptr.grabbed === 'shiba' || mood.winceT > 0 || mood.dazeT > 0 || mood.huffT > 0;
       if (busy) {
         if (this.state !== 'idle') this.state = 'idle';
         this.timer = 1.8;
@@ -1986,8 +2016,9 @@ export function mountShibaScene(container, hooks = {}) {
 
         case 'zoomies': {
           this.zoomAngle += dt * 3.1;
-          const zx = Math.cos(this.zoomAngle) * (room.halfW * 0.62);
           const zz = Math.sin(this.zoomAngle * 1.35) * (room.halfD * 0.65);
+          const bnd = frustum.boundsAtZ(zz);
+          const zx = Math.cos(this.zoomAngle) * (bnd.maxX * 0.62);
           this.targetX = zx; this.targetZ = zz;
           if (body.onFloor && this.stepCd <= 0) {
             this.stepCd = 0.26;
@@ -2123,7 +2154,6 @@ export function mountShibaScene(container, hooks = {}) {
 
     triggerHuffPuff() {
       sfx.huff();
-      emitHaptic('huff');
       this.shake = 0.24;
       _v1.set(0, 0, 1).applyQuaternion(body.quat);
       fx.spawnPuff(body.x, body.y, body.z, _v1.x, _v1.z);
@@ -2356,15 +2386,12 @@ export function mountShibaScene(container, hooks = {}) {
   function startShibaGrab() {
     if (ptr.grabbed === 'shiba') return;
     ptr.grabbed = 'shiba';
-    body.wallStickT = 0;
-    body.wallStickTag = null;
     ptr.grabQuat.copy(body.quat);
     ptr.grabStartWorld.set(body.x, body.y, body.z);
     ptr.kneadDist = 0;
     mood.onGrab();
     sfx.grab();
-    emitHaptic('grab');
-    soft.jvy += 2.4; soft.jvx -= 1.6;
+    soft.jy += 0.08; soft.jx -= 0.06;
   }
 
   let lastBgTapAt = 0;
@@ -2457,28 +2484,24 @@ export function mountShibaScene(container, hooks = {}) {
 
     if (ptr.mode === 'shiba') {
       const movedPx = Math.hypot(e.clientX - ptr.sx0, e.clientY - ptr.sy0);
-      if (!ptr.grabbed && (movedPx > 5 || now - ptr.t0 > 110)) {
+      if (!ptr.grabbed && (movedPx > 3 || now - ptr.t0 > 90)) {
         startShibaGrab();
       }
       if (raycaster.ray.intersectPlane(dragPlane, hitPt)) {
-        // Natürliches 1-Finger-Tiefen-Gleiten: tief am unteren Rand zieht leicht nach vorne ans Glas
-        const rect = canvas.getBoundingClientRect();
-        const ny = (e.clientY - rect.top) / Math.max(rect.height, 1); // 0 oben .. 1 unten
-        if (activeTouches.size < 2 && ny > 0.78 && body.y < 1.2) {
-          ptr.dragZ = lerp(ptr.dragZ, room.halfD - 0.42, 0.08);
-          dragPlane.setFromNormalAndCoplanarPoint(_planeNormal, _v1.set(0, 0, ptr.dragZ));
-        }
-
-        const nx = clamp(hitPt.x, -room.halfW - 0.15, room.halfW + 0.15);
-        const nyW = clamp(hitPt.y, 0.05, room.ceil + 0.15);
+        const bnd = frustum.boundsAtZ(ptr.dragZ);
+        const nx = clamp(hitPt.x, -bnd.maxX - 0.15, bnd.maxX + 0.15);
+        const nyW = clamp(hitPt.y, 0.08, bnd.maxY + 0.15);
         const nz = clamp(ptr.dragZ, -room.halfD - 0.15, room.halfD + 0.15);
         const stepDist = Math.hypot(nx - ptr.dragPos.x, nyW - ptr.dragPos.y);
         ptr.dragPos.set(nx, nyW, nz);
         ptr.lookWorld.copy(ptr.dragPos);
         ptr.lookActiveT = 2.0;
 
+        if (ptr.samples.length === 1 && now - ptr.samples[0][0] > 40) {
+          ptr.samples[0][0] = now - 20;
+        }
         ptr.samples.push([now, nx, nyW, nz]);
-        while (ptr.samples.length > 2 && now - ptr.samples[0][0] > 65) ptr.samples.shift();
+        while (ptr.samples.length > 2 && now - ptr.samples[0][0] > 70) ptr.samples.shift();
 
         // Sanftes Kneten / Streicheln auf der Stelle (wenn er am Boden bleibt und man weich rubbelt!)
         if (ptr.grabbed === 'shiba' && body.y < RY + 0.42 && Math.hypot(nx - ptr.grabStartWorld.x, nyW - ptr.grabStartWorld.y) < 0.72) {
@@ -2487,7 +2510,6 @@ export function mountShibaScene(container, hooks = {}) {
             ptr.kneadDist = 0;
             mood.onKneadPet();
             sfx.pet();
-            emitHaptic('pet');
             soft.tailWV += 12;
             if (now - ptr.lastPetFx > 360) {
               ptr.lastPetFx = now;
@@ -2560,28 +2582,29 @@ export function mountShibaScene(container, hooks = {}) {
 
         if (isDbl) {
           // Doppel-Tap irgendwo: Shiba flitzt direkt ganz nach vorne an die Glasscheibe!
-          sfx.whistle(); emitHaptic('tap');
-          const tx = clamp(body.x * 0.35, -room.halfW + 0.7, room.halfW - 0.7);
+          sfx.whistle();
+          const tx = clamp(body.x * 0.35, -room.halfW + 0.65, room.halfW - 0.65);
           const tz = room.halfD - 0.65;
           fx.spawnRipple(tx, tz, '#C5742E');
           brain.callTo(tx, tz, true);
         } else if (raycaster.ray.intersectPlane(floorPlane, hitPt) &&
-                   Math.abs(hitPt.x) < room.halfW &&
-                   hitPt.z >= -room.halfD && hitPt.z <= room.halfD) {
+                   hitPt.z >= -room.halfD && hitPt.z <= room.halfD &&
+                   Math.abs(hitPt.x) < frustum.boundsAtZ(hitPt.z).maxX) {
           // Boden-Tap (egal ob ganz vorne oder ganz hinten in der 3. Dimension!): Shiba läuft genau dorthin!
-          sfx.whistle(); emitHaptic('tap');
+          sfx.whistle();
           fx.spawnRipple(hitPt.x, hitPt.z, '#C5742E');
           ptr.lookWorld.set(hitPt.x, 0.35, hitPt.z);
           ptr.lookActiveT = 3.0;
           mood.curiousT = 1.6;
           brain.callTo(hitPt.x, hitPt.z, true);
         } else {
-          // Tap auf Wand / oberen Bereich: Shiba schaut neugierig hin & hopst in diese Richtung!
+          // Tap oben: Shiba schaut neugierig hin & hopst in diese Richtung!
           const backP = new THREE.Plane(_planeNormal, room.halfD * 0.35);
           if (raycaster.ray.intersectPlane(backP, hitPt)) {
-            const tx = clamp(hitPt.x, -room.halfW + 0.7, room.halfW - 0.7);
             const tz = hitPt.y > room.ceil * 0.55 ? -room.halfD + 0.85 : room.halfD - 0.72;
-            sfx.whistle(); emitHaptic('tap');
+            const bnd = frustum.boundsAtZ(tz);
+            const tx = clamp(hitPt.x, -bnd.maxX + 0.7, bnd.maxX - 0.7);
+            sfx.whistle();
             fx.spawnRipple(tx, tz, '#C5742E');
             ptr.lookWorld.set(hitPt.x, hitPt.y, tz);
             ptr.lookActiveT = 2.6;
@@ -2596,24 +2619,32 @@ export function mountShibaScene(container, hooks = {}) {
 
     if (ptr.grabbed === 'shiba') {
       ptr.grabbed = null;
-      const s = ptr.samples, a = s[0], b = s[s.length - 1];
-      const dtS = Math.max((b[0] - a[0]) / 1000, 1 / 120);
-      let vx = ((b[1] - a[1]) / dtS) * 1.28;
-      let vy = ((b[2] - a[2]) / dtS) * 1.28;
-      let vz = ((b[3] - a[3]) / dtS) * 1.25;
+      const s = ptr.samples;
+      // Präzise Flick-Geschwindigkeit (funktioniert bei kurzem Schnippen genauso stark wie beim Durchziehen!)
+      let vx = 0, vy = 0, vz = 0;
+      if (s.length >= 2) {
+        const lastS = s[s.length - 1];
+        // Fenster 1: Gesamt-Fenster (letzte ~60ms), Fenster 2: jüngster Flick-Impuls (letzte ~25ms)
+        const a = s[0];
+        const dtAll = Math.max((lastS[0] - a[0]) / 1000, 1 / 120);
+        const vxAll = (lastS[1] - a[1]) / dtAll;
+        const vyAll = (lastS[2] - a[2]) / dtAll;
+        const vzAll = (lastS[3] - a[3]) / dtAll;
 
-      // Natürliche 3D-Wurftiefe für Ein-Finger-Touch!
-      // Schneller Flick nach oben -> fliegt im 3D-Bogen nach hinten in den Raum (-Z)!
-      // Schneller Slam nach unten aus der Luft -> springt nach vorne gegen die iPhone-Scheibe (+Z)!
-      if (Math.abs(vz) < 1.2) {
-        if (vy > 4.2) {
-          vz -= clamp((vy - 3.2) * 0.74, 0, 15.5);
-        } else if (vy < -5.2 && body.y > 1.25) {
-          vz += clamp((-vy - 4.2) * 0.58, 0, 11.5);
-        } else if (Math.abs(vx) > 6.0) {
-          // Schneller Seitwärts-Wurf bekommt lebendige 3D-Drehung in die Tiefe!
-          vz += (ptr.grabLocal.x >= 0 ? -1 : 1) * clamp(Math.abs(vx) * 0.24, 0, 5.5);
-        }
+        let recentIdx = s.length - 2;
+        while (recentIdx > 0 && lastS[0] - s[recentIdx][0] < 22) recentIdx--;
+        const rS = s[recentIdx];
+        const dtRec = Math.max((lastS[0] - rS[0]) / 1000, 1 / 120);
+        const vxRec = (lastS[1] - rS[1]) / dtRec;
+        const vyRec = (lastS[2] - rS[2]) / dtRec;
+        const vzRec = (lastS[3] - rS[3]) / dtRec;
+
+        // Nimm den stärkeren Impuls (kurzer knackiger Schnipper wird nie runtergemittelt!)
+        const useRec = Math.hypot(vxRec, vyRec) > Math.hypot(vxAll, vyAll);
+        const boost = 1.38;
+        vx = (useRec ? vxRec : vxAll) * boost;
+        vy = (useRec ? vyRec : vyAll) * boost;
+        vz = (useRec ? vzRec : vzAll) * 1.25;
       }
 
       const sp = Math.hypot(vx, vy, vz);
@@ -2621,21 +2652,21 @@ export function mountShibaScene(container, hooks = {}) {
         vx *= MAX_THROW / sp; vy *= MAX_THROW / sp; vz *= MAX_THROW / sp;
       }
 
-      body.vx = lerp(body.vx, vx, 0.88);
-      body.vy = lerp(body.vy, vy, 0.88);
-      body.vz = lerp(body.vz, vz, 0.88);
-      body.oz += clamp(-vx * 0.42, -9, 9);
-      body.ox += clamp(vz * 0.42, -9, 9);
-      body.oy += clamp(vx * 0.28, -6, 6);
+      // Direkt übernehmen (kein verzögertes Blending mit 0!)
+      body.vx = vx;
+      body.vy = vy;
+      body.vz = vz;
+      body.oz += clamp(-vx * 0.36, -8, 8);
+      body.ox += clamp(vz * 0.36, -8, 8);
+      body.oy += clamp(vx * 0.24, -5, 5);
 
-      soft.pvx -= soft.pullX * 28;
-      soft.pvy -= soft.pullY * 28;
-      soft.pvz -= soft.pullZ * 28;
+      soft.pvx -= soft.pullX * 32;
+      soft.pvy -= soft.pullY * 32;
+      soft.pvz -= soft.pullZ * 32;
 
       const finalSp = Math.hypot(body.vx, body.vy, body.vz);
       if (finalSp > 4.5) {
         sfx.throwWhoosh(finalSp);
-        emitHaptic('tap');
       }
       mood.onThrown(finalSp);
     } else if (ptr.mode === 'shiba') {
@@ -2654,6 +2685,7 @@ export function mountShibaScene(container, hooks = {}) {
   const _tgtDir = new THREE.Vector3(), _cross = new THREE.Vector3(), _grabGoalQ = new THREE.Quaternion();
 
   let time = 0, lookX = 0, lookY = 0, prevVx = 0, prevVy = 0, prevVz = 0, lastImpactSfx = 0;
+  let earTwitchT = 2.6, earTwitchSide = 1;
   let smoothBreath = 0, smoothCheek = 0, smoothStretch = 0, smoothPitch = 0, smoothRoll = 0;
 
   function stepPhysics3D(dt, moodFlags) {
@@ -2662,63 +2694,38 @@ export function mountShibaScene(container, hooks = {}) {
     let maxPress = 0;
 
     for (let i = 0; i < SUB; i++) {
-      const prevStick = body.wallStickT;
-      body.wallStickT = Math.max(0, body.wallStickT - h);
-      body.wallSplatCd = Math.max(0, body.wallSplatCd - h);
-
-      // Beim Ablösen von der Wand: saftiger Mochi-Abprall zurück in den Raum!
-      if (prevStick > 0 && body.wallStickT <= 0 && ptr.grabbed !== 'shiba') {
-        const reb = body.wallReboundSpd;
-        body.vx += body.wallStickNx * reb;
-        body.vy += body.wallStickNy * reb + (Math.abs(body.wallStickNy) < 0.5 ? 2.2 : 0);
-        body.vz += body.wallStickNz * reb;
-        soft.jvx += (Math.abs(body.wallStickNx) > 0.5 ? -3.8 : 2.8);
-        soft.jvy += (Math.abs(body.wallStickNy) > 0.5 ? -3.8 : 3.2);
-        body.wallStickTag = null;
-      }
-
       if (ptr.grabbed === 'shiba') {
         _v1.copy(ptr.grabLocal).applyQuaternion(body.quat);
         const dx = ptr.dragPos.x - (body.x + _v1.x);
         const dy = ptr.dragPos.y - (body.y + _v1.y);
         const dz = ptr.dragPos.z - (body.z + _v1.z);
 
-        // Ultra-snappy, schwerelose Feder -> klebt direkt & reaktiv am Finger!
-        const kLift = 330;
-        const cLift = 21.5;
+        // Sofortige, verzögerungsfreie Finger-Kopplung!
+        const kLift = 520;
+        const cLift = 30.0;
         body.vx += ((kLift * dx - cLift * body.vx) / MASS) * h;
-        body.vy += (((kLift * dy - cLift * body.vy) / MASS) - G * 0.14) * h;
+        body.vy += (((kLift * dy - cLift * body.vy) / MASS) - G * 0.08) * h;
         body.vz += ((kLift * dz - cLift * body.vz) / MASS) * h;
 
-        const swayR = clamp(-body.vx * 0.042, -0.42, 0.42);
-        const swayP = clamp(body.vy * 0.022, -0.22, 0.22);
+        const swayR = clamp(-body.vx * 0.036, -0.34, 0.34);
+        const swayP = clamp(body.vy * 0.018, -0.18, 0.18);
         _tmpEuler.set(swayP, 0, swayR);
         _dq.setFromEuler(_tmpEuler);
         _grabGoalQ.copy(ptr.grabQuat).multiply(_dq);
         _qErr.copy(_grabGoalQ).multiply(_qInv.copy(body.quat).invert());
         if (_qErr.w < 0) _qErr.set(-_qErr.x, -_qErr.y, -_qErr.z, -_qErr.w);
-        body.ox += (_qErr.x * 115 - body.ox * 14) * h;
-        body.oy += (_qErr.y * 115 - body.oy * 14) * h;
-        body.oz += (_qErr.z * 115 - body.oz * 14) * h;
-      } else if (body.wallStickT > 0) {
-        // Klebt kurz platt an Wand/Decke/Frontscheibe & rutscht weich ein Stück ab (wie im Video 00:01 & 00:04!)
-        body.vx += (-body.wallStickNx * 9.5) * h;
-        body.vy += (-body.wallStickNy * 9.5) * h;
-        body.vz += (-body.wallStickNz * 9.5) * h;
-        if (Math.abs(body.wallStickNy) < 0.5) {
-          body.vy = lerp(body.vy, -0.42, Math.min(1, h * 14));
-        }
-        body.ox *= 1 - 7 * h; body.oy *= 1 - 7 * h; body.oz *= 1 - 7 * h;
+        body.ox += (_qErr.x * 130 - body.ox * 16) * h;
+        body.oy += (_qErr.y * 130 - body.oy * 16) * h;
+        body.oz += (_qErr.z * 130 - body.oz * 16) * h;
       } else {
         body.vy -= G * h;
-        // iPhone-Kippen wirkt als sanfte 3D-Schwerkraft im Raum (inkl. nach vorne ans Glas!)
         body.vx += motion.gx * 15.0 * h;
         body.vz += motion.gz * 15.0 * h;
-        body.vx *= 1 - 0.10 * h;
-        body.vz *= 1 - 0.10 * h;
-        body.ox *= 1 - 0.42 * h;
-        body.oy *= 1 - 0.60 * h;
-        body.oz *= 1 - 0.42 * h;
+        body.vx *= 1 - 0.08 * h;
+        body.vz *= 1 - 0.08 * h;
+        body.ox *= 1 - 0.45 * h;
+        body.oy *= 1 - 0.62 * h;
+        body.oz *= 1 - 0.45 * h;
       }
 
       body.x += body.vx * h;
@@ -2731,23 +2738,22 @@ export function mountShibaScene(container, hooks = {}) {
         body.quat.premultiply(_dq).normalize();
       }
 
-      const pF = softWallCollide3D( 0,  1,  0,  room.floor, h, 'floor');
-      const pC = softWallCollide3D( 0, -1,  0, -room.ceil,  h, 'ceil');
-      const pL = softWallCollide3D( 1,  0,  0, -room.halfW, h, 'left');
-      const pR = softWallCollide3D(-1,  0,  0, -room.halfW, h, 'right');
-      const pB = softWallCollide3D( 0,  0,  1, -room.halfD, h, 'back');
-      const pN = softWallCollide3D( 0,  0, -1, -room.halfD, h, 'front');
-      if (pF > 0) body.onFloor = true;
-      maxPress = Math.max(maxPress, pF, pC, pL, pR, pB, pN);
-
-      // NaN & Sicherheits-Clamp
-      const limX = room.halfW - 0.25, limZ = room.halfD - 0.25;
-      if (!Number.isFinite(body.x) || !Number.isFinite(body.y) || !Number.isFinite(body.z)) {
-        body.x = 0; body.y = RY + 0.05; body.z = 0.2; body.vx = body.vy = body.vz = 0;
+      const planes = frustum.planes;
+      for (let pi = 0; pi < planes.length; pi++) {
+        const pl = planes[pi];
+        const p = softWallCollide3D(pl.nx, pl.ny, pl.nz, pl.d, h, pl.tag);
+        if (pl.tag === 'floor' && p > 0) body.onFloor = true;
+        if (p > maxPress) maxPress = p;
       }
-      body.x = clamp(body.x, -limX, limX);
-      body.z = clamp(body.z, -limZ, limZ);
-      body.y = clamp(body.y, 0.14, room.ceil - 0.14);
+
+      // NaN & Frustum-Sicherheits-Clamp (wächst nach hinten mit!)
+      if (!Number.isFinite(body.x) || !Number.isFinite(body.y) || !Number.isFinite(body.z)) {
+        body.x = 0; body.y = RY + 0.02; body.z = 0.65; body.vx = body.vy = body.vz = 0;
+      }
+      body.z = clamp(body.z, -room.halfD + 0.25, room.halfD - 0.25);
+      const bnd = frustum.boundsAtZ(body.z);
+      body.x = clamp(body.x, -bnd.maxX + 0.25, bnd.maxX - 0.25);
+      body.y = clamp(body.y, 0.22, bnd.maxY - 0.25);
 
       if (body.onFloor && ptr.grabbed !== 'shiba') {
         // Steht zügig und organisch wieder auf seinen 4 Pfötchen auf!
@@ -2829,63 +2835,51 @@ export function mountShibaScene(container, hooks = {}) {
 
     if (hardest) {
       const isGlass = hardest.kind === 'glass';
-      const isSplat = hardest.kind === 'splat';
       const isPancake = hardest.kind === 'pancake';
       const nLoc = _v2.set(hardest.nx, hardest.ny, hardest.nz).applyQuaternion(_qInv);
-      const imp = clamp(hardest.speed * (isPancake ? 0.72 : (isGlass || isSplat) ? 0.64 : 0.52), 0.6, 9.5);
+      const imp = clamp(hardest.speed * 0.032, 0.04, 0.32);
 
-      if (isPancake) {
-        // Extremer Boden-Pfannkuchen-Splat (00:02 & 00:08 im Referenzvideo!)
-        soft.jvy -= clamp(imp * 2.15, 2.5, 13.5);
-        soft.jvx += clamp(imp * 1.95, 2.2, 12.5);
-        soft.bvx += imp * 1.3;
-      } else {
-        soft.jvx += (Math.abs(nLoc.y) + Math.abs(nLoc.z) - Math.abs(nLoc.x)) * imp * 1.75;
-        soft.jvy += (Math.abs(nLoc.x) + Math.abs(nLoc.z) * 0.85 - Math.abs(nLoc.y)) * imp * 1.70;
-        soft.bvx += nLoc.y * imp * 1.35;
-        soft.bvy += nLoc.x * imp * 1.35;
-      }
-      soft.earLV += imp * 2.8;
-      soft.earRV += imp * 2.6;
-      soft.tailCV += imp * 2.6;
-      soft.tailWV += (Math.random() - 0.5) * imp * 5.4;
+      // SOFORTIGE Kontakt-Stauchung im Aufprall-Frame (0ms Verzögerung!) + schneller federnder Rücksprung!
+      const sxHit = (Math.abs(nLoc.y) + Math.abs(nLoc.z) * 0.7 - Math.abs(nLoc.x)) * imp;
+      const syHit = (Math.abs(nLoc.x) + Math.abs(nLoc.z) * 0.7 - Math.abs(nLoc.y)) * imp;
+      soft.jx = clamp(soft.jx + sxHit * 0.85, -0.28, 0.34);
+      soft.jy = clamp(soft.jy + syHit * 0.92, -0.36, 0.28);
+      soft.jvx += sxHit * 4.5;
+      soft.jvy += syHit * 4.5;
+      soft.bvx += nLoc.y * imp * 3.2;
+      soft.bvy += nLoc.x * imp * 3.2;
+      soft.earLV += imp * 14;
+      soft.earRV += imp * 13;
+      soft.tailCV += imp * 12;
+      soft.tailWV += (Math.random() - 0.5) * imp * 22;
 
       const now = performance.now();
       if (now - lastImpactSfx > 60) {
         lastImpactSfx = now;
-        if (isGlass || isSplat) {
+        if (isGlass) {
           sfx.wallSplat(hardest.speed);
-          emitHaptic('impactHeavy');
         } else if (isPancake) {
           sfx.pancake(hardest.speed);
-          emitHaptic('impactHeavy');
         } else {
           sfx.bounce(hardest.speed);
-          if (hardest.speed > 7.5) emitHaptic('impactHeavy');
-          else if (hardest.speed > 2.5) emitHaptic('impact');
         }
       }
 
       if (isGlass) {
         fx.spawnGlassSplat(hardest.cx, hardest.cy, room.halfD);
         fx.spawnImpact(hardest.cx, hardest.cy, room.halfD - 0.05, 0, 0, hardest.speed);
-        soft.camShake = Math.min(0.15, hardest.speed * 0.0085);
+        soft.camShake = Math.min(0.08, hardest.speed * 0.005);
         mood.onGlassSplat(hardest.speed);
-      } else if (isSplat) {
-        fx.spawnImpact(hardest.cx, hardest.cy, hardest.cz, hardest.nx, hardest.ny, hardest.speed);
-        soft.camShake = Math.min(0.13, hardest.speed * 0.007);
-        mood.shockT = Math.max(mood.shockT, 0.55);
-        mood.onWallImpact(hardest.speed);
       } else if (isPancake) {
-        fx.spawnDust(hardest.cx, 0.05, hardest.cz, 6);
+        fx.spawnDust(hardest.cx, 0.05, hardest.cz, 5);
         fx.spawnImpact(hardest.cx, 0.12, hardest.cz, 0, 1, hardest.speed);
-        soft.camShake = Math.min(0.13, hardest.speed * 0.007);
-        mood.winceT = Math.max(mood.winceT, 0.36);
+        soft.camShake = Math.min(0.07, hardest.speed * 0.004);
+        mood.winceT = Math.max(mood.winceT, 0.24);
         mood.onWallImpact(hardest.speed);
       } else {
-        if (hardest.speed > 4.4) {
+        if (hardest.speed > 4.6) {
           fx.spawnImpact(hardest.cx, hardest.cy, hardest.cz, hardest.nx, hardest.ny, hardest.speed);
-          soft.camShake = Math.min(0.11, hardest.speed * 0.005);
+          soft.camShake = Math.min(0.07, hardest.speed * 0.004);
         } else if (hardest.ny > 0.6 && hardest.speed > 2.0) {
           fx.spawnDust(hardest.cx, 0.04, hardest.cz, 3);
         }
@@ -2893,52 +2887,51 @@ export function mountShibaScene(container, hooks = {}) {
       }
     }
 
-    // 2. Softbody-Trägheit & elastisches Teig-Ziehen
-    soft.shvX += (-aLoc.x * 0.072) * dt * 16;
-    soft.shvZ += (-aLoc.z * 0.072) * dt * 16;
-    soft.bvx  += (-aLoc.y * 0.056) * dt * 16;
-    soft.bvy  += (-aLoc.x * 0.050) * dt * 16;
+    // 2. Softbody-Trägheit & knackiges elastisches Rückfedern (kein träger Gummi-Delay!)
+    soft.shvX += (-aLoc.x * 0.045) * dt * 16;
+    soft.shvZ += (-aLoc.z * 0.045) * dt * 16;
+    soft.bvx  += (-aLoc.y * 0.036) * dt * 16;
+    soft.bvy  += (-aLoc.x * 0.032) * dt * 16;
 
     if (ptr.grabbed === 'shiba') {
       _v2.copy(ptr.grabLocal).applyQuaternion(body.quat).add(_v3.set(body.x, body.y, body.z));
       _v3.copy(ptr.dragPos).sub(_v2).applyQuaternion(_qInv);
-      const tx = clamp(_v3.x * 0.40, -0.28, 0.28);
-      const ty = clamp(_v3.y * 0.40, -0.28, 0.28);
-      const tz = clamp(_v3.z * 0.40, -0.28, 0.28);
-      soft.pvx += (210 * (tx - soft.pullX) - 16 * soft.pvx) * dt;
-      soft.pvy += (210 * (ty - soft.pullY) - 16 * soft.pvy) * dt;
-      soft.pvz += (210 * (tz - soft.pullZ) - 16 * soft.pvz) * dt;
+      const tx = clamp(_v3.x * 0.34, -0.22, 0.22);
+      const ty = clamp(_v3.y * 0.34, -0.22, 0.22);
+      const tz = clamp(_v3.z * 0.34, -0.22, 0.22);
+      soft.pvx += (280 * (tx - soft.pullX) - 20 * soft.pvx) * dt;
+      soft.pvy += (280 * (ty - soft.pullY) - 20 * soft.pvy) * dt;
+      soft.pvz += (280 * (tz - soft.pullZ) - 20 * soft.pvz) * dt;
       sfx.squish(body.wallPress);
-      if (body.wallPress > 0.14) emitHaptic('squish');
     } else {
-      soft.pvx += (-205 * soft.pullX - 8.2 * soft.pvx) * dt;
-      soft.pvy += (-205 * soft.pullY - 8.2 * soft.pvy) * dt;
-      soft.pvz += (-205 * soft.pullZ - 8.2 * soft.pvz) * dt;
+      soft.pvx += (-320 * soft.pullX - 16 * soft.pvx) * dt;
+      soft.pvy += (-320 * soft.pullY - 16 * soft.pvy) * dt;
+      soft.pvz += (-320 * soft.pullZ - 16 * soft.pvz) * dt;
     }
-    soft.pullX = clamp(soft.pullX + soft.pvx * dt, -0.32, 0.32);
-    soft.pullY = clamp(soft.pullY + soft.pvy * dt, -0.32, 0.32);
-    soft.pullZ = clamp(soft.pullZ + soft.pvz * dt, -0.32, 0.32);
+    soft.pullX = clamp(soft.pullX + soft.pvx * dt, -0.24, 0.24);
+    soft.pullY = clamp(soft.pullY + soft.pvy * dt, -0.24, 0.24);
+    soft.pullZ = clamp(soft.pullZ + soft.pvz * dt, -0.24, 0.24);
 
     const stepSpring = (val, vel, k, c) => {
       const nv = vel + (-k * val - c * vel) * dt;
       return [val + nv * dt, nv];
     };
-    // Wabbelige, rundlich-weiche Mochi-Federn (federt 3-4x sichtbar nach wie Marshmallow-Teig!)
-    [soft.jx, soft.jvx]         = stepSpring(soft.jx, soft.jvx, 140, 4.2);
-    [soft.jy, soft.jvy]         = stepSpring(soft.jy, soft.jvy, 140, 4.2);
-    [soft.shearX, soft.shvX]    = stepSpring(soft.shearX, soft.shvX, 128, 4.8);
-    [soft.shearZ, soft.shvZ]    = stepSpring(soft.shearZ, soft.shvZ, 128, 4.8);
-    [soft.bendX, soft.bvx]      = stepSpring(soft.bendX, soft.bvx, 124, 4.8);
-    [soft.bendY, soft.bvy]      = stepSpring(soft.bendY, soft.bvy, 124, 4.8);
+    // Straffe, lebendige Mochi-Federn (~180ms Rücksprung statt langsamer Zeitlupe!)
+    [soft.jx, soft.jvx]         = stepSpring(soft.jx, soft.jvx, 310, 11.2);
+    [soft.jy, soft.jvy]         = stepSpring(soft.jy, soft.jvy, 310, 11.2);
+    [soft.shearX, soft.shvX]    = stepSpring(soft.shearX, soft.shvX, 240, 10.5);
+    [soft.shearZ, soft.shvZ]    = stepSpring(soft.shearZ, soft.shvZ, 240, 10.5);
+    [soft.bendX, soft.bvx]      = stepSpring(soft.bendX, soft.bvx, 230, 10.2);
+    [soft.bendY, soft.bvy]      = stepSpring(soft.bendY, soft.bvy, 230, 10.2);
 
-    soft.jx = clamp(soft.jx, -0.46, 0.62);
-    soft.jy = clamp(soft.jy, -0.60, 0.50);
-    soft.shearX = clamp(soft.shearX, -0.44, 0.44);
-    soft.shearZ = clamp(soft.shearZ, -0.44, 0.44);
-    soft.bendX = clamp(soft.bendX, -0.52, 0.52);
-    soft.bendY = clamp(soft.bendY, -0.52, 0.52);
+    soft.jx = clamp(soft.jx, -0.28, 0.34);
+    soft.jy = clamp(soft.jy, -0.36, 0.28);
+    soft.shearX = clamp(soft.shearX, -0.34, 0.34);
+    soft.shearZ = clamp(soft.shearZ, -0.34, 0.34);
+    soft.bendX = clamp(soft.bendX, -0.38, 0.38);
+    soft.bendY = clamp(soft.bendY, -0.38, 0.38);
 
-    const targetSt = (!body.onFloor || ptr.grabbed === 'shiba') ? clamp(speed * 0.020, 0, 0.34) : 0;
+    const targetSt = (!body.onFloor || ptr.grabbed === 'shiba') ? clamp(speed * 0.014, 0, 0.24) : 0;
     soft.stretch += (targetSt - soft.stretch) * Math.min(1, dt * 13);
     if (speed > 0.7) {
       _v2.set(body.vx / speed, body.vy / speed, body.vz / speed).applyQuaternion(_qInv).normalize();
@@ -2996,7 +2989,7 @@ export function mountShibaScene(container, hooks = {}) {
       cheekPuff: smoothCheek, bodyStretch: smoothStretch,
       headPitch: smoothPitch, headRoll: smoothRoll,
       breath: smoothBreath, bodyX: body.x, bodyY: body.y, bodyZ: body.z,
-    }, M, Minv, roundBox);
+    }, M, Minv);
 
     shiba.root.matrix.copy(M);
     shiba.root.matrixWorldNeedsUpdate = true;
@@ -3027,14 +3020,30 @@ export function mountShibaScene(container, hooks = {}) {
       eyeSX: 1 + pop * 0.14, eyeSY: 1 - pop * 0.42,
     });
 
-    // 5. Sekundär-Physik Ohren & Kringelschwanz
+    // 5. Natürliche, lebendige Ohren (sanftes Wippen, zufälliges Ohr-Zucken & weiches Floppern!)
     soft.planeAmt = lerp(soft.planeAmt, moodOut.wantPlane, Math.min(1, dt * 7.5));
-    const earSlip = clamp(-body.vy * 0.040, -0.35, 0.55);
-    soft.earLV += (145 * (earSlip - soft.earL) - 7.8 * soft.earLV - body.oz * 2.0) * dt;
-    soft.earRV += (145 * (earSlip - soft.earR) - 7.8 * soft.earRV + body.oz * 2.0) * dt;
+    earTwitchT -= dt;
+    let autoTwitchL = 0, autoTwitchR = 0;
+    if (earTwitchT < 0) {
+      const ph = -earTwitchT / 0.26;
+      if (ph < 1) {
+        const pulse = Math.sin(ph * Math.PI) * (1 - soft.planeAmt * 0.65);
+        if (earTwitchSide < 0) autoTwitchL = pulse * 0.78;
+        else autoTwitchR = pulse * 0.78;
+      } else {
+        earTwitchT = 2.2 + Math.random() * 2.8;
+        earTwitchSide = Math.random() < 0.5 ? -1 : 1;
+      }
+    }
+    const earIdleL = Math.sin(time * 2.15) * 0.07 + Math.sin(time * 3.7) * 0.03;
+    const earIdleR = Math.sin(time * 2.15 + 0.55) * 0.07 + Math.sin(time * 3.4 + 1.1) * 0.03;
+    const earSlip = clamp(-body.vy * 0.048, -0.45, 0.65);
+    const earLat  = clamp(aLoc.x * 0.008, -0.25, 0.25);
+    soft.earLV += (96 * (earSlip + earIdleL - earLat - soft.earL) - 5.4 * soft.earLV - body.oz * 2.4) * dt;
+    soft.earRV += (96 * (earSlip + earIdleR + earLat - soft.earR) - 5.4 * soft.earRV + body.oz * 2.4) * dt;
     soft.earL += soft.earLV * dt; soft.earR += soft.earRV * dt;
-    shiba.applyEar(shiba.earL, soft.earL, soft.planeAmt);
-    shiba.applyEar(shiba.earR, soft.earR, soft.planeAmt);
+    shiba.applyEar(shiba.earL, soft.earL + autoTwitchL, soft.planeAmt);
+    shiba.applyEar(shiba.earR, soft.earR + autoTwitchR, soft.planeAmt);
 
     const wagFreq = moodOut.zoomies ? 17.0 : moodOut.excited ? 13.0 : moodOut.sleepy ? 1.2 : 4.0;
     const wagAmp  = moodOut.zoomies ? 1.0  : moodOut.excited ? 0.88 : moodOut.sleepy ? 0.08 : 0.34;
@@ -3045,17 +3054,17 @@ export function mountShibaScene(container, hooks = {}) {
     soft.tailW += soft.tailWV * dt; soft.tailC += soft.tailCV * dt;
     shiba.applyTail(clamp(soft.tailW, -1.15, 1.15), clamp(soft.tailC, -0.6, 1.15));
 
-    // 6. Flacher 2D-Cel-Bodenschatten exakt wie in mochi_shiba.html
+    // 6. Flacher 2D-Cel-Bodenschatten exakt wie in mochi_shiba.html (immer HINTER den Pfoten!)
     const hgt = Math.max(0, body.y - RY);
     const f = 1 / (1 + hgt * 0.36);
     const wBoost = 1 + Math.max(0, soft.jx) * 0.34 + body.wallPress * 0.24 + (moodOut.sleepy ? 0.14 : 0);
     shibaShadow.mesh.position.set(
-      body.x - lightDir.x * 0.20,
-      0.002,
-      body.z - lightDir.z * 0.12,
+      body.x - lightDir.x * 0.22,
+      -0.001,
+      body.z - lightDir.z * 0.14,
     );
     shibaShadow.mesh.scale.set(0.88 * f * wBoost, 1, 0.70 * f * wBoost);
-    shibaShadow.mat.uniforms.uOpacity.value = 0.84 * Math.min(1, f * 1.1);
+    shibaShadow.mat.uniforms.uOpacity.value = 0.86 * Math.min(1, f * 1.1);
 
     soft.camShake = Math.max(0, soft.camShake - dt * 0.55);
     updateCamera(dt, soft.camShake);
@@ -3100,7 +3109,6 @@ export function mountShibaScene(container, hooks = {}) {
     body.vy = Math.max(body.vy, 5.5 + pow * 2.2);
     soft.jvy -= 5.2; soft.jvx += 4.5; soft.earLV += 11; soft.earRV += 11; soft.tailWV += 16;
     sfx.yip();
-    emitHaptic('impact');
     fx.spawnDust(body.x, 0.05, body.z, 4);
   }
 
