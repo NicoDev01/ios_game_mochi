@@ -829,7 +829,7 @@ export function mountShibaScene(container, hooks = {}) {
       lightDir, mode: 'tail',
     });
 
-    // Einheitlicher Stencil für Körper + Ohren -> EINE durchgehende Außenlinie ohne störende Ohr-Innenlinien!
+    // Einheitlicher Stencil für Körper + Ohren + Schwanz -> EINE durchgehende Außenlinie (inkl. Kringelschwanz!)
     matBody.stencilWrite = true;
     matBody.stencilRef = 1;
     matBody.stencilFunc = THREE.AlwaysStencilFunc;
@@ -839,6 +839,11 @@ export function mountShibaScene(container, hooks = {}) {
     matEar.stencilRef = 1;
     matEar.stencilFunc = THREE.AlwaysStencilFunc;
     matEar.stencilZPass = THREE.ReplaceStencilOp;
+
+    matTail.stencilWrite = true;
+    matTail.stencilRef = 1;
+    matTail.stencilFunc = THREE.AlwaysStencilFunc;
+    matTail.stencilZPass = THREE.ReplaceStencilOp;
 
     const outBody = createOutlineMaterial({ inkHex: SHARED.ink, thicknessPx: 4.0, depthBias: 0.0004 });
     outBody.stencilWrite = true;
@@ -850,8 +855,10 @@ export function mountShibaScene(container, hooks = {}) {
     outEar.stencilRef = 1;
     outEar.stencilFunc = THREE.NotEqualStencilFunc;
 
-    // Schwanz behält klassische Tiefen-Outline wie mochi_shiba.html (damit die Spirale von hinten klar lesbar bleibt!)
-    const outTail = createOutlineMaterial({ inkHex: SHARED.ink, thicknessPx: 3.5, depthBias: 0.0006 });
+    const outTail = createOutlineMaterial({ inkHex: SHARED.ink, thicknessPx: 3.8, depthBias: 0.0005 });
+    outTail.stencilWrite = true;
+    outTail.stencilRef = 1;
+    outTail.stencilFunc = THREE.NotEqualStencilFunc;
 
     const mkFaceMat = (color, extra = {}) => new THREE.MeshBasicMaterial({
       color, side: THREE.DoubleSide,
@@ -915,18 +922,19 @@ export function mountShibaScene(container, hooks = {}) {
     };
     const earL = makeEar(-1), earR = makeEar(1);
 
-    // Kringelschwanz (Maki-o)
-    const tailGeo = quadMeshToGeometry(buildShibaTailQuadMesh(), ([, , vz]) => {
-      const t = clamp((-vz - 0.005) / 0.075, 0, 1);
-      return t * t * (3 - 2 * t);
-    });
-    const tailRest = new Float32Array(tailGeo.attributes.position.array);
+    // Kringelschwanz (Maki-o) — vollständig in die einheitliche Außenlinie eingebunden!
+    const tailGeo = quadMeshToGeometry(buildShibaTailQuadMesh(), ([, , vz]) => smoothstepJS(0.036, -0.022, vz));
     const tailGroup = new THREE.Group();
     const ts = sampleBodySurface(bodyGeo, 0, 0.375, -1);
-    const tailPatch = buildSurfacePatch(bodyGeo, ts.point, 8);
-    tailGroup.position.set(0, 0.375, ts.point.z + 0.036);
-    tailGroup.rotation.set(deg(-6), deg(30), deg(-6));
+    const tailPatch = buildSurfacePatch(bodyGeo, ts.point, 10);
+    const tailRestNrm = new THREE.Vector3();
+    const tailInitP = new THREE.Vector3();
+    evalSurfacePatch(bodyGeo, tailPatch, tailInitP, tailRestNrm);
+    const tailBaseQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(deg(-6), deg(28), deg(-5)));
+    tailGroup.position.copy(tailInitP).addScaledVector(tailRestNrm, -0.036);
+    tailGroup.quaternion.copy(tailBaseQuat);
     const tailPivot = new THREE.Group();
+    tailPivot.rotation.order = 'YXZ';
     tailGroup.add(tailPivot);
     const tailMesh = new THREE.Mesh(tailGeo, matTail);
     tailMesh.renderOrder = 1;
@@ -1315,6 +1323,8 @@ export function mountShibaScene(container, hooks = {}) {
       }
       evalSurfacePatch(bodyGeo, tailPatch, tmpP, tmpN);
       tailGroup.position.copy(tmpP).addScaledVector(tmpN, -0.036);
+      tmpQ.setFromUnitVectors(tailRestNrm, tmpN);
+      tailGroup.quaternion.copy(tmpQ).multiply(tailBaseQuat);
 
       for (const fa of faceAttachments) {
         evalSurfacePatch(bodyGeo, fa.patch, tmpP, tmpN);
@@ -1328,17 +1338,10 @@ export function mountShibaScene(container, hooks = {}) {
 
     let lastTailW = -999, lastTailL = -999;
     const applyTail = (wag, lift) => {
-      if (Math.abs(lastTailW - wag) < 0.005 && Math.abs(lastTailL - lift) < 0.005) return;
+      if (Math.abs(lastTailW - wag) < 0.004 && Math.abs(lastTailL - lift) < 0.004) return;
       lastTailW = wag; lastTailL = lift;
-      tailPivot.rotation.set(deg(-14) * lift, deg(28) * wag, deg(-11) * wag);
-      const pos = tailGeo.attributes.position, fw = deg(18) * wag, fl = deg(14) * lift;
-      for (let i = 0; i < pos.count; i++) {
-        const x = tailRest[i*3], y = tailRest[i*3+1], z = tailRest[i*3+2], b = clamp(-z/0.30, 0, 1) ** 2;
-        const ca = fl*b, y1 = y*Math.cos(ca) - z*Math.sin(ca), z1 = y*Math.sin(ca) + z*Math.cos(ca);
-        const wa = fw*b;
-        pos.setXYZ(i, x*Math.cos(wa) + z1*Math.sin(wa), y1, -x*Math.sin(wa) + z1*Math.cos(wa));
-      }
-      pos.needsUpdate = true; tailGeo.computeVertexNormals();
+      // Sauberes Shiba-Kringelschwanz-Wedeln aus der Wurzel (kein Verzerren der Spirale!)
+      tailPivot.rotation.set(deg(-11) * lift, deg(19) * wag, deg(-11) * wag);
     };
 
     const applyEar = (ear, twitch, planeAmt) => {
@@ -1601,10 +1604,14 @@ export function mountShibaScene(container, hooks = {}) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.toneMapping = THREE.NoToneMapping;
+  renderer.autoClear = false;
   container.appendChild(renderer.domElement);
 
+  // Getrennter Hintergrund-/Schatten-Pass: Bodenschatten liegt IMMER strikt hinter Shiba & Outlines!
+  const bgScene = new THREE.Scene();
+  bgScene.background = new THREE.Color(SHARED.bg);
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(SHARED.bg);
+  scene.background = null;
   const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.2, 45);
 
   // Raum-Geometrie passt sich exakt dem iPhone-Screen-Seitenverhältnis an!
@@ -1623,34 +1630,32 @@ export function mountShibaScene(container, hooks = {}) {
 
   const fx = createFXSystem(scene, camera);
 
-  // Flacher 2D-Cel-Bodenschatten EXAKT wie in mochi_shiba.html:
-  // transparent: false + renderOrder: -10 + depthWrite: false -> rendert GARANTIERT VOR den Pfoten!
+  // Bodenschatten im eigenen bgScene-Pass -> färbt niemals die schwarze Shiba-Outline ein!
   const shibaShadow = (() => {
     const g = new THREE.CircleGeometry(1, 64);
     g.rotateX(-Math.PI / 2);
     const mat = new THREE.ShaderMaterial({
-      transparent: false,
+      transparent: true,
       depthWrite: false,
-      depthTest: true,
+      depthTest: false,
       uniforms: {
         uColor:   { value: new THREE.Color(SHARED.groundShad) },
-        uBgColor: { value: new THREE.Color(SHARED.bg) },
-        uOpacity: { value: 0.86 },
+        uOpacity: { value: 0.68 },
+        uEdge:    { value: 0.80 },
       },
       vertexShader: `varying vec2 vUv; void main(){ vUv=uv*2.0-1.0; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
-      fragmentShader: `uniform vec3 uColor; uniform vec3 uBgColor; uniform float uOpacity; varying vec2 vUv;
+      fragmentShader: `uniform vec3 uColor; uniform float uOpacity, uEdge; varying vec2 vUv;
         void main(){
           float r = length(vUv);
           if (r > 1.0) discard;
-          float aa = max(fwidth(r) * 1.2, 0.012);
-          float alpha = (1.0 - smoothstep(1.0 - aa, 1.0, r)) * uOpacity;
-          gl_FragColor = vec4(mix(uBgColor, uColor, alpha), 1.0);
+          float alpha = (1.0 - smoothstep(uEdge, 1.0, r)) * uOpacity;
+          gl_FragColor = vec4(uColor, alpha);
           #include <colorspace_fragment>
         }`,
     });
     const m = new THREE.Mesh(g, mat);
     m.renderOrder = -10;
-    scene.add(m);
+    bgScene.add(m);
     return { mesh: m, mat };
   })();
 
@@ -1742,6 +1747,7 @@ export function mountShibaScene(container, hooks = {}) {
     ox: 0, oy: 0, oz: 0,
     onFloor: true,
     wallPress: 0,
+    floorPress: 0,
   };
 
   const soft = {
@@ -1783,54 +1789,74 @@ export function mountShibaScene(container, hooks = {}) {
     const isFloor = wallTag === 'floor';
     const isFrontGlass = wallTag === 'front';
 
-    // Kein künstliches Ankleben/Delay -> sofortige, knackige elastische Kollision!
-    const maxComp = h * (grabbed ? 0.34 : 0.26);
-    const penC = Math.min(pen, maxComp);
-    const isRestFloor = isFloor && !grabbed;
-
-    const kWall = grabbed ? 150 : isRestFloor ? 1250 : 340;
-    const kSq   = grabbed ? 480 : isRestFloor ? 1700 : 760;
-    const damp  = grabbed ? 14 : isRestFloor ? 16.0 : 8.5;
-    const fn = Math.max(0, kWall * penC + kSq * penC * penC - damp * vn);
-
-    body.vx += (nx*fn/MASS)*hStep;
-    body.vy += (ny*fn/MASS)*hStep;
-    body.vz += (nz*fn/MASS)*hStep;
-    if (!grabbed) {
-      const fx = nx*fn, fy = ny*fn, fz = nz*fn;
-      body.ox += ((ry*fz - rz*fy)/INERTIA)*hStep*0.58;
-      body.oy += ((rz*fx - rx*fz)/INERTIA)*hStep*0.58;
-      body.oz += ((rx*fy - ry*fx)/INERTIA)*hStep*0.58;
-    }
-    if (pen > maxComp) {
-      const ex = pen - maxComp;
-      body.x += nx*ex; body.y += ny*ex; body.z += nz*ex;
-      if (vn < 0) {
-        const b = grabbed ? 0.05 : isFloor ? 0.44 : 0.60;
-        body.vx -= (1+b)*vn*nx; body.vy -= (1+b)*vn*ny; body.vz -= (1+b)*vn*nz;
+    if (grabbed) {
+      // Beim bewussten Kneten/Andrücken an Wand, Glas oder Boden weich abflachen lassen
+      const maxComp = h * 0.34, penC = Math.min(pen, maxComp);
+      const fn = Math.max(0, 150 * penC + 480 * penC * penC - 14 * vn);
+      body.vx += (nx*fn/MASS)*hStep;
+      body.vy += (ny*fn/MASS)*hStep;
+      body.vz += (nz*fn/MASS)*hStep;
+      if (pen > maxComp) {
+        const ex = pen - maxComp;
+        body.x += nx*ex; body.y += ny*ex; body.z += nz*ex;
+        if (vn < 0) {
+          body.vx -= 1.05*vn*nx; body.vy -= 1.05*vn*ny; body.vz -= 1.05*vn*nz;
+        }
       }
+      return penC / h;
     }
+
+    // SOFORTIGER, VERZÖGERUNGSFREIER ABPRALL im ersten Kontakt-Substep (0 ms Delay!)
+    const bounceThresh = isFloor ? -1.35 : -0.65;
+    if (vn < bounceThresh) {
+      const e = isFloor ? 0.50 : 0.68;
+      const jn = -(1 + e) * vn;
+      body.vx += nx * jn;
+      body.vy += ny * jn;
+      body.vz += nz * jn;
+
+      // Direkt aus der Überlappung lösen (kein Einsinken oder Klebenbleiben!)
+      body.x += nx * pen;
+      body.y += ny * pen;
+      body.z += nz * pen;
+
+      // Natürlicher Drehimpuls aus Hebelarm & Reibung beim Abprall
+      const vtx = vcx - vn*nx, vty = vcy - vn*ny, vtz = vcz - vn*nz, vtLen = Math.hypot(vtx, vty, vtz);
+      const jImp = jn * MASS;
+      body.ox += ((ry*nz - rz*ny)*jImp / INERTIA) * 0.24;
+      body.oy += ((rz*nx - rx*nz)*jImp / INERTIA) * 0.24;
+      body.oz += ((rx*ny - ry*nx)*jImp / INERTIA) * 0.24;
+      if (vtLen > 1e-4) {
+        const jt = Math.min(vtLen * MASS * 0.36, jImp * (isFloor ? 0.28 : 0.20));
+        const tx = -(vtx/vtLen)*jt, ty = -(vty/vtLen)*jt, tz = -(vtz/vtLen)*jt;
+        body.vx += tx/MASS; body.vy += ty/MASS; body.vz += tz/MASS;
+        body.ox += ((ry*tz - rz*ty)/INERTIA) * 0.42;
+        body.oy += ((rz*tx - rx*tz)/INERTIA) * 0.42;
+        body.oz += ((rx*ty - ry*tx)/INERTIA) * 0.42;
+      }
+
+      if (-vn > 1.6) {
+        events.push({
+          nx, ny, nz, speed: -vn,
+          cx: body.x+rx, cy: body.y+ry, cz: isFrontGlass ? room.halfD : body.z+rz,
+          kind: isFrontGlass ? 'glass' : (isFloor && -vn > 5.8) ? 'pancake' : 'wall',
+        });
+      }
+      return clamp((-vn) * 0.055, 0.08, 0.34);
+    }
+
+    // Ruhiger Stand / Kontakt ohne Einsinken oder Zittern
+    body.x += nx * pen; body.y += ny * pen; body.z += nz * pen;
+    if (vn < 0) { body.vx -= vn*nx; body.vy -= vn*ny; body.vz -= vn*nz; }
+    const fn = isFloor ? MASS * G : Math.max(0, 180 * pen);
     const vtx = vcx - vn*nx, vty = vcy - vn*ny, vtz = vcz - vn*nz, vtLen = Math.hypot(vtx,vty,vtz);
     if (vtLen > 1e-4) {
-      const fric = grabbed ? 0.20 : isFloor ? 0.40 : 0.22;
-      const fMag = Math.min(vtLen*16, fric * fn);
+      const fric = isFloor ? 0.42 : 0.22;
+      const fMag = Math.min(vtLen * 12, fric * fn);
       const ftx = -(vtx/vtLen)*fMag, fty = -(vty/vtLen)*fMag, ftz = -(vtz/vtLen)*fMag;
       body.vx += (ftx/MASS)*hStep; body.vy += (fty/MASS)*hStep; body.vz += (ftz/MASS)*hStep;
-      if (!grabbed) {
-        const aS = Math.abs(vn) < 0.9 && isFloor ? 0.22 : 0.65;
-        body.ox += ((ry*ftz - rz*fty)/INERTIA)*hStep*aS;
-        body.oy += ((rz*ftx - rx*ftz)/INERTIA)*hStep*aS;
-        body.oz += ((rx*fty - ry*ftx)/INERTIA)*hStep*aS;
-      }
     }
-    if (!grabbed && -vn > 1.8 && pen < 0.22) {
-      events.push({
-        nx, ny, nz, speed: -vn,
-        cx: body.x+rx, cy: body.y+ry, cz: isFrontGlass ? room.halfD : body.z+rz,
-        kind: isFrontGlass ? 'glass' : (isFloor && -vn > 5.8) ? 'pancake' : 'wall',
-      });
-    }
-    return penC / h;
+    return clamp(pen / h, 0.02, 0.20);
   }
 
   // ===========================================================================
@@ -1845,8 +1871,15 @@ export function mountShibaScene(container, hooks = {}) {
     zoomAngle: 0,
     sniffCount: 0,
     tiltSign: 1,
+    trotPhase: 0,
+    stepMark: 0,
+    trotRoll: 0,
+    trotPitch: 0,
+    trotBob: 0,
+    isTrotting: false,
 
     interrupt(withStretch = false) {
+      this.isTrotting = false;
       const wasNap = this.state === 'nap';
       if (wasNap && withStretch) {
         this.enter('stretch', 1.15);
@@ -1896,15 +1929,32 @@ export function mountShibaScene(container, hooks = {}) {
       }
     },
 
-    hopStep(tx, tz, speedScale = 1.0, jumpY = 3.2) {
-      const dx = tx - body.x, dz = tz - body.z, dist = Math.hypot(dx, dz) || 1;
-      const spd = clamp(dist * 2.4, 1.8, 4.4) * speedScale;
-      body.vx += (dx / dist) * spd;
-      body.vz += (dz / dist) * spd;
-      body.vy += jumpY;
-      soft.jvy -= 3.6; soft.jvx += 3.0; soft.tailWV += 10;
-      fx.spawnDust(body.x, 0.03, body.z, 2);
-      sfx.hop();
+    // Bodennahes, natürliches Shiba-Trippeln statt Frosch-Hüpfen!
+    trotToward(tx, tz, dt, speedScale = 1.0, skipAmt = 0) {
+      if (!body.onFloor || ptr.grabbed === 'shiba') return;
+      const dx = tx - body.x, dz = tz - body.z, dist = Math.hypot(dx, dz);
+      if (dist < 0.06) return;
+      this.isTrotting = true;
+      const maxSpd = (1.85 + 1.35 * clamp(dist * 0.75, 0, 1)) * speedScale;
+      const accel = Math.min(1, dt * 8.5);
+      body.vx = lerp(body.vx, (dx / dist) * maxSpd, accel);
+      body.vz = lerp(body.vz, (dz / dist) * maxSpd, accel);
+
+      const hSpd = Math.hypot(body.vx, body.vz);
+      this.trotPhase += dt * (8.2 + hSpd * 2.5);
+      const halfStep = Math.floor(this.trotPhase / Math.PI);
+      if (halfStep !== this.stepMark) {
+        this.stepMark = halfStep;
+        if (hSpd > 0.85) {
+          body.vy = Math.max(body.vy, 0.55 + Math.min(0.45, hSpd * 0.14) + skipAmt);
+          soft.jvy -= 0.75; soft.jvx += 0.55;
+          if (Math.random() < 0.40) fx.spawnDust(body.x, 0.03, body.z, 1);
+        }
+      }
+      const amp = clamp(hSpd / 2.5, 0.25, 1.0);
+      this.trotRoll  = lerp(this.trotRoll,  Math.sin(this.trotPhase) * 0.11 * amp, Math.min(1, dt * 14));
+      this.trotPitch = lerp(this.trotPitch, 0.095 * amp, Math.min(1, dt * 10));
+      this.trotBob   = lerp(this.trotBob,   Math.abs(Math.sin(this.trotPhase)) * 0.045 * amp, Math.min(1, dt * 16));
     },
 
     pickNextActivity(idleSec) {
@@ -1949,9 +1999,13 @@ export function mountShibaScene(container, hooks = {}) {
       }
 
       const busy = ptr.grabbed === 'shiba' || mood.winceT > 0 || mood.dazeT > 0 || mood.huffT > 0;
+      this.isTrotting = false;
       if (busy) {
         if (this.state !== 'idle') this.state = 'idle';
         this.timer = 1.8;
+        this.trotRoll = lerp(this.trotRoll, 0, Math.min(1, dt * 10));
+        this.trotPitch = lerp(this.trotPitch, 0, Math.min(1, dt * 10));
+        this.trotBob = lerp(this.trotBob, 0, Math.min(1, dt * 12));
         return;
       }
 
@@ -1969,10 +2023,7 @@ export function mountShibaScene(container, hooks = {}) {
             this.enter('inspectGlass', 3.6);
             break;
           }
-          if (body.onFloor && this.stepCd <= 0) {
-            this.stepCd = 0.40;
-            this.hopStep(this.targetX, this.targetZ, 0.95, 2.7);
-          }
+          this.trotToward(this.targetX, this.targetZ, dt, 0.90);
           break;
         }
 
@@ -1995,10 +2046,7 @@ export function mountShibaScene(container, hooks = {}) {
             this.enter('sniff', 2.1 + Math.random() * 1.0);
             break;
           }
-          if (body.onFloor && this.stepCd <= 0) {
-            this.stepCd = 0.46;
-            this.hopStep(this.targetX, this.targetZ, 0.88, 2.6);
-          }
+          this.trotToward(this.targetX, this.targetZ, dt, 0.80);
           break;
         }
 
@@ -2020,10 +2068,10 @@ export function mountShibaScene(container, hooks = {}) {
           const bnd = frustum.boundsAtZ(zz);
           const zx = Math.cos(this.zoomAngle) * (bnd.maxX * 0.62);
           this.targetX = zx; this.targetZ = zz;
-          if (body.onFloor && this.stepCd <= 0) {
-            this.stepCd = 0.26;
-            this.hopStep(zx, zz, 1.38, 3.6);
-            fx.spawnDust(body.x, 0.04, body.z, 3);
+          this.trotToward(zx, zz, dt, 1.48, 0.55);
+          if (this.stepCd <= 0) {
+            this.stepCd = 0.30;
+            fx.spawnDust(body.x, 0.04, body.z, 2);
             if (Math.random() < 0.35) fx.spawnSparkles(body.x, body.y + 0.14, body.z, 1);
           }
           if (this.timer <= 0) {
@@ -2041,16 +2089,13 @@ export function mountShibaScene(container, hooks = {}) {
             } else {
               mood.happyT = Math.max(mood.happyT, 1.4);
               fx.spawnHearts(body.x, body.y + 0.14, body.z, 1);
-              soft.jvy -= 3.0; soft.jvx += 2.6; soft.tailWV += 14;
+              soft.jvy -= 2.2; soft.jvx += 1.9; soft.tailWV += 14;
               this.enter('idle', 2.8);
             }
             break;
           }
           if (this.timer <= 0) { this.enter('idle', 2.2); break; }
-          if (body.onFloor && this.stepCd <= 0) {
-            this.stepCd = 0.36;
-            this.hopStep(this.targetX, this.targetZ, 1.18, 3.2);
-          }
+          this.trotToward(this.targetX, this.targetZ, dt, 1.12);
           break;
         }
 
@@ -2075,6 +2120,12 @@ export function mountShibaScene(container, hooks = {}) {
             this.enter('shakeOff', 0.48);
           }
           break;
+      }
+
+      if (!this.isTrotting) {
+        this.trotRoll  = lerp(this.trotRoll,  0, Math.min(1, dt * 9));
+        this.trotPitch = lerp(this.trotPitch, 0, Math.min(1, dt * 9));
+        this.trotBob   = lerp(this.trotBob,   0, Math.min(1, dt * 11));
       }
     },
   };
@@ -2541,26 +2592,26 @@ export function mountShibaScene(container, hooks = {}) {
     if (r === 'boop') {
       sfx.boop();
       emitHaptic('tap');
-      if (body.onFloor) { body.vy += 3.4; body.vz -= 0.9; }
-      soft.jvy -= 4.4; soft.jvx += 3.6; soft.earLV += 9; soft.earRV += 9; soft.tailWV += 14;
+      if (body.onFloor) { body.vy += 1.7; body.vz -= 0.45; }
+      soft.jvy -= 3.2; soft.jvx += 2.6; soft.earLV += 8; soft.earRV += 8; soft.tailWV += 14;
       fx.spawnSparkles(body.x, body.y + 0.20, body.z + 0.35, 3);
     } else if (r === 'love') {
       sfx.pet();
       emitHaptic('pet');
-      if (body.onFloor) body.vy += 2.6;
-      soft.jvy -= 3.8; soft.jvx += 3.2; soft.earLV += 7; soft.earRV += 7; soft.tailWV += 16;
+      if (body.onFloor) body.vy += 1.2;
+      soft.jvy -= 2.8; soft.jvx += 2.3; soft.earLV += 7; soft.earRV += 7; soft.tailWV += 16;
       fx.spawnHearts(body.x, body.y + 0.22, body.z, 3);
     } else if (r === 'happy') {
       sfx.yip();
       emitHaptic('tap');
-      if (body.onFloor) body.vy += 4.4;
-      soft.jvy -= 5.0; soft.jvx += 4.2; soft.bvx += 3.6;
-      soft.earLV += 8; soft.earRV += 8; soft.tailWV += 14;
+      if (body.onFloor) body.vy += 1.6;
+      soft.jvy -= 3.0; soft.jvx += 2.5; soft.bvx += 2.4;
+      soft.earLV += 7; soft.earRV += 7; soft.tailWV += 14;
       fx.spawnHearts(body.x, body.y + 0.16, body.z, 2);
     } else {
-      if (body.onFloor) body.vy += 2.0;
-      soft.jvy -= 3.8; soft.jvx += 3.2; soft.shvX += (Math.random() - 0.5) * 12;
-      soft.earLV += 11; soft.earRV += 11;
+      if (body.onFloor) body.vy += 1.0;
+      soft.jvy -= 2.8; soft.jvx += 2.4; soft.shvX += (Math.random() - 0.5) * 10;
+      soft.earLV += 9; soft.earRV += 9;
     }
   }
 
@@ -2691,6 +2742,7 @@ export function mountShibaScene(container, hooks = {}) {
   function stepPhysics3D(dt, moodFlags) {
     const SUB = Math.min(6, Math.max(4, Math.ceil(dt * 210))), h = dt / SUB;
     body.onFloor = false;
+    body.floorPress = 0;
     let maxPress = 0;
 
     for (let i = 0; i < SUB; i++) {
@@ -2739,10 +2791,11 @@ export function mountShibaScene(container, hooks = {}) {
       }
 
       const planes = frustum.planes;
+      let maxFloorPress = 0;
       for (let pi = 0; pi < planes.length; pi++) {
         const pl = planes[pi];
         const p = softWallCollide3D(pl.nx, pl.ny, pl.nz, pl.d, h, pl.tag);
-        if (pl.tag === 'floor' && p > 0) body.onFloor = true;
+        if (pl.tag === 'floor' && p > 0) { body.onFloor = true; if (p > maxFloorPress) maxFloorPress = p; }
         if (p > maxPress) maxPress = p;
       }
 
@@ -2763,17 +2816,18 @@ export function mountShibaScene(container, hooks = {}) {
         body.ox += (_cross.x * 34 - body.ox * 5.0) * h;
         body.oz += (_cross.z * 34 - body.oz * 5.0) * h;
 
-        // Blickrichtung: aktives Ziel -> sonst lebendig zu dir nach vorne durch die Scheibe!
-        let turnTarget = null;
+        // Blickrichtung: aktives Ziel -> sonst ruhig nach vorne durch die Scheibe!
+        let turnTarget = null, isCalmLook = false;
         if (brain.state === 'wander' || brain.state === 'zoomies' || brain.state === 'approachGlass' || brain.state === 'comeToSpot') {
           turnTarget = _v3.set(brain.targetX, 0, brain.targetZ);
         } else if (mood.current === 'Hmpf') {
           turnTarget = _v3.set(body.x - 1.4, 0, body.z - 1.0);
         } else if (ptr.lookActiveT > 0.1 && !(moodFlags && moodFlags.sleepy)) {
           turnTarget = _v3.set(ptr.lookWorld.x, 0, ptr.lookWorld.z);
+          isCalmLook = true;
         } else {
-          // Schaut dich neugierig-direkt durch die iPhone-Scheibe an!
           turnTarget = _v3.set(view.eyeX * 0.65, 0, room.halfD + 3.0);
+          isCalmLook = true;
         }
 
         if (turnTarget) {
@@ -2784,18 +2838,21 @@ export function mountShibaScene(container, hooks = {}) {
             if (_tgtDir.lengthSq() > 0.04) {
               _tgtDir.normalize();
               const yawErr = Math.atan2(_localFwd.z*_tgtDir.x - _localFwd.x*_tgtDir.z, _localFwd.x*_tgtDir.x + _localFwd.z*_tgtDir.z);
-              const gain = (brain.state === 'idle' || brain.state === 'nap') ? 5.5 : 16;
-              body.oy += (yawErr * gain - body.oy * 4.5) * h;
+              const gain = isCalmLook ? 3.8 : 13.5;
+              body.oy += (yawErr * gain - body.oy * 4.8) * h;
             }
           }
         } else {
-          body.oy *= 1 - 4.0 * h;
+          body.oy *= 1 - 4.5 * h;
         }
 
-        const floorDrag = (moodFlags && moodFlags.sleepy) ? 2.8 : 1.5;
-        body.vx *= 1 - floorDrag * h;
-        body.vz *= 1 - floorDrag * h;
+        // Griffige Bodenreibung beim Anhalten (kein Eislaufen), frei beim Trippeln
+        const hSpd = Math.hypot(body.vx, body.vz);
+        const floorDrag = brain.isTrotting ? 0.85 : (hSpd < 1.3 ? 4.2 : 1.65) + (moodFlags && moodFlags.sleepy ? 1.4 : 0);
+        body.vx *= Math.max(0, 1 - floorDrag * h);
+        body.vz *= Math.max(0, 1 - floorDrag * h);
       }
+      if (maxFloorPress > body.floorPress) body.floorPress = maxFloorPress;
     }
     body.wallPress = maxPress;
   }
@@ -2971,8 +3028,9 @@ export function mountShibaScene(container, hooks = {}) {
     } else if (moodOut.sniffing) {
       targetPitch = 0.22 + Math.sin(time * 14) * 0.05;
       targetRoll = brain.tiltSign * 0.14;
-    } else if (speed > 0.6 && body.onFloor) {
-      targetRoll = Math.sin(time * (moodOut.zoomies ? 18 : 12)) * clamp(speed * 0.048, 0, 0.15);
+    } else if (Math.abs(brain.trotRoll) > 0.008 || Math.abs(brain.trotPitch) > 0.008) {
+      targetRoll = brain.trotRoll;
+      targetPitch = brain.trotPitch;
     } else if (!moodOut.sleepy) {
       targetRoll = clamp(-lookX * 0.15, -0.15, 0.15);
       targetPitch = clamp(-lookY * 0.10, -0.10, 0.10);
@@ -2981,7 +3039,8 @@ export function mountShibaScene(container, hooks = {}) {
     smoothRoll  = lerp(smoothRoll,  targetRoll,  Math.min(1, dt * 8.0));
 
     shiba.deformBody({
-      jx: soft.jx, jy: soft.jy, shearX: soft.shearX, shearZ: soft.shearZ, bendX: soft.bendX, bendY: soft.bendY,
+      jx: soft.jx + brain.trotBob * 0.45, jy: soft.jy - brain.trotBob,
+      shearX: soft.shearX, shearZ: soft.shearZ, bendX: soft.bendX, bendY: soft.bendY,
       stretch: soft.stretch, stLocalX: soft.stX, stLocalY: soft.stY, stLocalZ: soft.stZ,
       pullActive: Math.hypot(soft.pullX, soft.pullY, soft.pullZ) > 0.002,
       grabX: ptr.grabLocal.x, grabY: ptr.grabLocal.y, grabZ: ptr.grabLocal.z,
@@ -3054,21 +3113,27 @@ export function mountShibaScene(container, hooks = {}) {
     soft.tailW += soft.tailWV * dt; soft.tailC += soft.tailCV * dt;
     shiba.applyTail(clamp(soft.tailW, -1.15, 1.15), clamp(soft.tailC, -0.6, 1.15));
 
-    // 6. Flacher 2D-Cel-Bodenschatten exakt wie in mochi_shiba.html (immer HINTER den Pfoten!)
+    // 6. Lichtkonsistenter Bodenschatten im bgScene-Pass (STRIKT HINTER Shiba & schwarzer Outline!)
     const hgt = Math.max(0, body.y - RY);
-    const f = 1 / (1 + hgt * 0.36);
-    const wBoost = 1 + Math.max(0, soft.jx) * 0.34 + body.wallPress * 0.24 + (moodOut.sleepy ? 0.14 : 0);
+    const f = 1 / (1 + hgt * 0.42);
+    const wBoost = 1 + clamp(soft.jx, -0.14, 0.26) * 0.30 + body.floorPress * 0.20 + (moodOut.sleepy ? 0.12 : 0);
     shibaShadow.mesh.position.set(
-      body.x - lightDir.x * 0.22,
-      -0.001,
-      body.z - lightDir.z * 0.14,
+      body.x - lightDir.x * (0.08 + hgt * 0.22),
+      0.001,
+      body.z - lightDir.z * (0.08 + hgt * 0.22),
     );
-    shibaShadow.mesh.scale.set(0.88 * f * wBoost, 1, 0.70 * f * wBoost);
-    shibaShadow.mat.uniforms.uOpacity.value = 0.86 * Math.min(1, f * 1.1);
+    _localFwd.set(0, 0, 1).applyQuaternion(body.quat);
+    if (Math.hypot(_localFwd.x, _localFwd.z) > 0.15) shibaShadow.mesh.rotation.y = Math.atan2(_localFwd.x, _localFwd.z);
+    shibaShadow.mesh.scale.set(0.78 * f * wBoost, 1, 0.68 * f * wBoost);
+    shibaShadow.mat.uniforms.uOpacity.value = 0.66 * f;
+    shibaShadow.mat.uniforms.uEdge.value = lerp(0.82, 0.34, clamp(hgt * 0.45, 0, 1));
 
     soft.camShake = Math.max(0, soft.camShake - dt * 0.55);
     updateCamera(dt, soft.camShake);
     fx.update(dt);
+
+    renderer.clear();
+    renderer.render(bgScene, camera);
     renderer.render(scene, camera);
   }
 
